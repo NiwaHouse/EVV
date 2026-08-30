@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- フォルダバックグラウンド -->
+    <path
+        android:fillColor="#1976D2"
+        android:pathData="M10,4H4C2.9,4 2.01,4.9 2.01,6L2,18C2,19.1 2.9,20 4,20H20C21.1,20 22,19.1 22,18V8C22,6.9 21.1,6 20,6H12L10,4Z" />
+    <!-- ピクトグラム・画像アイコン overlay -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M8.5,13.5L11,16.5L14.5,12L19,18H5L8.5,13.5Z" />
+</vector>
