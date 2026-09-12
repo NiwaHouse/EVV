@@ -21,7 +21,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -30,7 +33,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.example.eev.core.model.Language
+import com.example.eev.core.model.SortOrder
 import com.example.eev.feature.translation.TranslationOverlay
+
+/**
+ * トリプルタップ判定に用いる連続タップの許容間隔（ミリ秒）。
+ * この時間内に3回タップされると操作モーダルを表示する。
+ */
+private const val TRIPLE_TAP_TIMEOUT_MS = 400L
 
 fun parseHexColor(hexString: String, defaultColor: Color): Color {
     return try {
@@ -57,8 +67,11 @@ fun ViewerScreen(
     onSourceLanguageChanged: (Language) -> Unit,
     onTargetLanguageChanged: (Language) -> Unit,
     onViewerSortOrderChanged: (SortOrder) -> Unit,
-    onDismissBottomSheet: () -> Unit
+    onDismissBottomSheet: () -> Unit,
+    onTripleTapNextFolder: () -> Unit,
+    onTripleTapFirstImage: () -> Unit
 ) {
+    var showTripleTapDialog by remember { mutableStateOf(false) }
     val currentFile = uiState.imageFiles.getOrNull(uiState.currentIndex)
     val currentBitmap = remember(currentFile?.absolutePath, uiState.cropPosition) {
         currentFile?.let { file ->
@@ -89,10 +102,28 @@ fun ViewerScreen(
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(Unit) {
+                // ダブルタップは無効化し、3連続タップ（トリプルタップ）で操作モーダルを表示する。
+                // detectTapGestures は onDoubleTap を指定するとダブルタップ待ちが発生するため、
+                // onTap の連打間隔を自前計測してトリプルタップを判定する。
+                var tapCount = 0
+                var lastTapTime = 0L
                 detectTapGestures(
-                    onTap = { onNextPage() },
-                    onLongPress = { onPreviousPage() },
-                    onDoubleTap = { onCloseViewer() }
+                    onTap = {
+                        val now = System.currentTimeMillis()
+                        if (now - lastTapTime < TRIPLE_TAP_TIMEOUT_MS) {
+                            tapCount++
+                        } else {
+                            tapCount = 1
+                        }
+                        lastTapTime = now
+                        if (tapCount >= 3) {
+                            tapCount = 0
+                            showTripleTapDialog = true
+                        } else {
+                            onNextPage()
+                        }
+                    },
+                    onLongPress = { onPreviousPage() }
                 )
             }
             .pointerInput(Unit) {
@@ -185,6 +216,24 @@ fun ViewerScreen(
                 .align(Alignment.BottomCenter)
                 .padding(16.dp)
         )
+
+        if (showTripleTapDialog) {
+            ViewerTripleTapDialog(
+                onDismiss = { showTripleTapDialog = false },
+                onCloseViewer = {
+                    showTripleTapDialog = false
+                    onCloseViewer()
+                },
+                onNextFolder = {
+                    showTripleTapDialog = false
+                    onTripleTapNextFolder()
+                },
+                onFirstImage = {
+                    showTripleTapDialog = false
+                    onTripleTapFirstImage()
+                }
+            )
+        }
 
         if (uiState.isBottomSheetVisible) {
             ViewerBottomSheet(

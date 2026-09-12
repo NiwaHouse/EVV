@@ -38,7 +38,8 @@ android {
         compose = true
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
+        // Kotlin 1.9.23 と互換の Compose Compiler バージョン
+        kotlinCompilerExtensionVersion = "1.5.11"
     }
 }
 

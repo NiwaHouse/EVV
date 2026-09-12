@@ -51,8 +51,24 @@ sealed class Screen {
 class MainActivity : ComponentActivity() {
 
     private lateinit var dataStore: EEVDataStore
+    private var explorerViewModel: ExplorerViewModel? = null
+
+    /**
+     * 全ファイルアクセス許可前に表示していた初期ディレクトリ（アプリ専用フォルダ）。
+     * 権限許可後に外部ストレージへ自動で切り替えるための比較基準として保持する。
+     */
+    private var lastResolvedDirectory: File? = null
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    /**
+     * Android 11 以降の全ファイルアクセス（MANAGE_EXTERNAL_STORAGE）要求ランチャー。
+     * 許可されると設定画面から戻るため、再読み込みは onResume 側で行う。
+     */
+    private val requestAllFilesAccessLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
     ) { _ -> }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,7 +79,12 @@ class MainActivity : ComponentActivity() {
 
         val storageManager = FileStorageManager()
         val ttsEngine = com.example.eev.feature.translation.TtsEngine(applicationContext)
-        val explorerViewModel = ExplorerViewModel(storageManager, dataStore)
+        val thumbnailCache = com.example.eev.feature.thumbnail.FolderThumbnailCache(applicationContext)
+        // 全ファイルアクセス許可時は外部ストレージ、未許可時は権限不要なアプリ専用フォルダを初期表示する。
+        val initialDirectory = resolveInitialDirectory()
+        lastResolvedDirectory = initialDirectory
+        val explorerViewModel = ExplorerViewModel(storageManager, dataStore, thumbnailCache, initialDirectory)
+        this.explorerViewModel = explorerViewModel
         val viewerViewModel = ViewerViewModel(storageManager = storageManager, dataStore = dataStore, ttsEngine = ttsEngine)
         val settingsViewModel = SettingsViewModel(dataStore)
 
@@ -80,6 +101,43 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 全ファイルアクセス許可の設定画面から戻った際に、初期ディレクトリを再解決する。
+     *
+     * [責任]: 権限許可後に外部ストレージ直下へ自動的に切り替える。
+     * [影響する状態]: エクスプローラの表示フォルダ。
+     * [潜在的エラー]: 権限未許可のままの場合は何もしない。
+     *
+     * 起動時はアプリ専用フォルダを表示していたが、ユーザーが設定画面で
+     * 全ファイルアクセスを許可した場合、外部ストレージ直下へ移動させる。
+     */
+    override fun onResume() {
+        super.onResume()
+        val resolved = resolveInitialDirectory()
+        val previous = lastResolvedDirectory
+        if (previous != null && resolved.absolutePath != previous.absolutePath) {
+            lastResolvedDirectory = resolved
+            explorerViewModel?.loadDirectory(resolved, recordHistory = false)
+        }
+    }
+
+    /**
+     * 起動時の初期表示ディレクトリを決定する。
+     *
+     * [責任]: 権限状態に応じた安全な初期ディレクトリの選択。
+     * [影響する状態]: エクスプローラの初期表示フォルダ。
+     * [潜在的エラー]: 外部ストレージが読めない場合はアプリ専用フォルダへフォールバックする。
+     *
+     * Android 11 以降で全ファイルアクセスが許可されていれば外部ストレージ直下、
+     * そうでなければ権限不要でアクセス可能なアプリ専用フォルダ（filesDir）を返す。
+     */
+    private fun resolveInitialDirectory(): File {
+        val external = Environment.getExternalStorageDirectory()
+        val hasAllFilesAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+            Environment.isExternalStorageManager()
+        return if (hasAllFilesAccess && external.canRead()) external else filesDir
+    }
+
     private fun checkAndRequestPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
@@ -92,6 +150,38 @@ class MainActivity : ComponentActivity() {
                 != PackageManager.PERMISSION_GRANTED
             ) {
                 requestPermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+        }
+        requestAllFilesAccessIfNeeded()
+    }
+
+    /**
+     * Android 11 以降で全ファイルアクセス権限（MANAGE_EXTERNAL_STORAGE）を要求する。
+     *
+     * [責任]: スコープドストレージ制限を超えたフォルダ走査のための権限誘導。
+     * [影響する状態]: アプリのストレージアクセス可否。
+     * [潜在的エラー]: 設定画面が存在しない端末では例外を握りつぶす。
+     *
+     * 未許可の場合は設定画面へ遷移する。アプリ専用フォルダ（filesDir）は権限不要で
+     * アクセス可能なため、未許可でもアプリ内フォルダの閲覧は可能である。
+     */
+    private fun requestAllFilesAccessIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        if (Environment.isExternalStorageManager()) return
+        try {
+            val intent = android.content.Intent(
+                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                android.net.Uri.parse("package:$packageName")
+            )
+            requestAllFilesAccessLauncher.launch(intent)
+        } catch (e: Exception) {
+            // 一部端末では専用設定画面が無いため、全体設定画面へフォールバックする。
+            try {
+                requestAllFilesAccessLauncher.launch(
+                    android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                )
+            } catch (ignored: Exception) {
+                // 設定画面が開けない場合は何もしない（アプリ専用フォルダのみ利用可能）。
             }
         }
     }
@@ -108,6 +198,7 @@ fun EEVApp(
     val explorerUiState by explorerViewModel.uiState.collectAsState()
     val viewerUiState by viewerViewModel.uiState.collectAsState()
     val settingsUiState by settingsViewModel.uiState.collectAsState()
+    val explorerScrollPositions by explorerViewModel.scrollPositions.collectAsState()
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = context as? ComponentActivity
@@ -127,7 +218,7 @@ fun EEVApp(
     val storageManager = remember { com.example.eev.core.storage.FileStorageManager() }
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
 
-    when (val screen = currentScreen) {
+    when (currentScreen) {
         is Screen.Explorer -> {
             ExplorerScreen(
                 uiState = explorerUiState,
@@ -136,6 +227,7 @@ fun EEVApp(
                 },
                 onFileClick = { item ->
                     if (storageManager.isImageFile(item.file)) {
+                        // エクスプローラの並び順をそのままビューワの起点ソート順として引き継ぐ。
                         viewerViewModel.loadImagesFromDirectory(
                             directory = explorerUiState.currentDirectory,
                             initialFile = item.file,
@@ -155,6 +247,12 @@ fun EEVApp(
                 onViewModeChanged = { viewMode ->
                     explorerViewModel.updateViewMode(viewMode)
                 },
+                onThumbnailSizeChanged = { size ->
+                    explorerViewModel.updateThumbnailSize(size)
+                },
+                onShowItemInfoChanged = { enabled ->
+                    explorerViewModel.updateShowItemInfo(enabled)
+                },
                 onSearchQueryChanged = { query ->
                     explorerViewModel.updateSearchQuery(query)
                 },
@@ -163,6 +261,9 @@ fun EEVApp(
                 },
                 onUpClick = {
                     explorerViewModel.navigateToParent()
+                },
+                onBackClick = {
+                    explorerViewModel.navigateBack()
                 },
                 onQuickLaunchViewer = { launchSortOrder ->
                     coroutineScope.launch {
@@ -173,12 +274,14 @@ fun EEVApp(
                         )
                         val firstImage = images.firstOrNull()
                         if (firstImage != null) {
-                            viewerViewModel.updateViewerSortOrder(launchSortOrder)
+                            // ソート順の決定は loadImagesFromDirectory の引数が唯一の真実源。
+                            // updateViewerSortOrder は選択されたソート順を次回起動用に永続化するのみ。
                             viewerViewModel.loadImagesFromDirectory(
                                 directory = explorerUiState.currentDirectory,
                                 initialFile = firstImage,
                                 sortOrder = launchSortOrder
                             )
+                            viewerViewModel.updateViewerSortOrder(launchSortOrder)
                             currentScreen = Screen.Viewer(
                                 directory = explorerUiState.currentDirectory,
                                 initialFile = firstImage
@@ -188,6 +291,10 @@ fun EEVApp(
                 },
                 onSettingsClick = {
                     currentScreen = Screen.Settings
+                },
+                savedScrollPositions = explorerScrollPositions,
+                onScrollPositionChanged = { path, index ->
+                    explorerViewModel.saveScrollPosition(path, index)
                 }
             )
         }
@@ -207,7 +314,9 @@ fun EEVApp(
                 onSourceLanguageChanged = { lang -> viewerViewModel.updateSourceLanguage(lang) },
                 onTargetLanguageChanged = { lang -> viewerViewModel.updateTargetLanguage(lang) },
                 onViewerSortOrderChanged = { sort -> viewerViewModel.updateViewerSortOrder(sort) },
-                onDismissBottomSheet = { viewerViewModel.toggleBottomSheet(false) }
+                onDismissBottomSheet = { viewerViewModel.toggleBottomSheet(false) },
+                onTripleTapNextFolder = { viewerViewModel.navigateToNextDirectoryFromMenu() },
+                onTripleTapFirstImage = { viewerViewModel.jumpToFirstImage() }
             )
         }
         is Screen.Settings -> {

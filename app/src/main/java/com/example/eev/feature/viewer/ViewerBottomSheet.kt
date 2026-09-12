@@ -75,8 +75,10 @@ fun ViewerBottomSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // ビューワ独自の並び順。エクスプローラのソート順とは独立して、
+            // フォルダ内画像の表示順および「次のフォルダ選択基準」に適用される。
             SortOrderDropdownSelector(
-                label = "画像ビューワの並び順",
+                label = "ビューワの並び順（次のフォルダ選択基準）",
                 selectedSortOrder = viewerSortOrder,
                 onSortOrderSelected = onViewerSortOrderChanged
             )

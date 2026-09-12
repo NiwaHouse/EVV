@@ -37,6 +37,11 @@ data class ViewerUiState(
     val backgroundColorHex: String = "#CC000000",
     val viewerSortOrder: SortOrder = SortOrder.NAME_ASC,
     val explorerSortOrder: SortOrder = SortOrder.NAME_ASC,
+    /**
+     * ビューワ起動時に指定された起点画像の絶対パス。
+     * ソート順変更時の再ソートで、表示位置を維持するための基準として使用する。
+     */
+    val anchorFilePath: String? = null,
     val isBottomSheetVisible: Boolean = false,
     val translationOverlayItems: List<TranslatedOverlayItem> = emptyList(),
     val isTranslating: Boolean = false,
@@ -114,24 +119,39 @@ class ViewerViewModel(
         }
         viewModelScope.launch {
             dataStore.viewerSortOrder.collectLatest { sortOrder ->
+                // DataStore は永続化された設定値の供給元。
+                // 既に同一ソート順が state に反映済みの場合は再ソートをスキップし、
+                // loadImagesFromDirectory で確定した表示位置を不必要に上書きしない。
+                if (_uiState.value.viewerSortOrder == sortOrder) return@collectLatest
                 _uiState.value = _uiState.value.copy(viewerSortOrder = sortOrder)
                 resortCurrentImages(sortOrder)
             }
         }
     }
 
+    /**
+     * 指定ディレクトリの画像一覧を [sortOrder] で読み込み、[initialFile] を起点にビューワを初期化する。
+     *
+     * [責任]: ビューワ表示用の画像一覧取得と起点インデックス決定。
+     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, viewerSortOrder, anchorFilePath。
+     * [潜在的エラー]: ディレクトリ非存在時は空リストとなり currentIndex は 0 にフォールバックする。
+     *
+     * ソート順の唯一の真実源は本メソッドの引数 [sortOrder] である。
+     * DataStore の viewerSortOrder は永続化のための保存先であり、読み込み時の決定には使用しない。
+     */
     fun loadImagesFromDirectory(directory: File, initialFile: File, sortOrder: SortOrder) {
         viewModelScope.launch {
-            val targetSortOrder = _uiState.value.viewerSortOrder
             val images = storageManager.getImageFiles(
                 directory = directory,
-                sortOrder = targetSortOrder,
+                sortOrder = sortOrder,
                 showHiddenFiles = _uiState.value.showHiddenFiles
             )
             val index = images.indexOfFirst { it.absolutePath == initialFile.absolutePath }.coerceAtLeast(0)
             _uiState.value = _uiState.value.copy(
                 imageFiles = images,
-                currentIndex = index
+                currentIndex = index,
+                viewerSortOrder = sortOrder,
+                anchorFilePath = initialFile.absolutePath
             )
             if (_uiState.value.isTranslationEnabled) {
                 processTranslationForCurrentImage()
@@ -145,21 +165,71 @@ class ViewerViewModel(
         }
     }
 
+    /**
+     * 現在のフォルダから、ビューワ独自の並び順に従って次の画像を含むフォルダへ移動する。
+     *
+     * [責任]: トリプルタップメニュー「次のフォルダに移動」の実行。
+     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, anchorFilePath, cropPosition。
+     * [潜在的エラー]: 親フォルダが存在しない、または後続に画像を含むフォルダが無い場合は何もせず false を返す。
+     *
+     * 移動先フォルダの最初の画像を自動的に開く。フォルダの並び順はビューワ独自のソート順
+     * ([ViewerUiState.viewerSortOrder]) を用いる。これによりエクスプローラのソート順とは
+     * 独立した「次のフォルダ選択基準」を実現する。
+     */
+    fun navigateToNextDirectoryFromMenu(): Boolean {
+        stopTtsReading()
+        return navigateToNextDirectory()
+    }
+
+    /**
+     * 現在のフォルダの先頭画像へ移動する（ビューワは開いたまま）。
+     *
+     * [責任]: トリプルタップメニュー「今のフォルダの最初の画像に戻る」の実行。
+     * [影響する状態]: ViewerUiState.currentIndex, cropPosition。
+     * [潜在的エラー]: 画像一覧が空の場合は何もしない。
+     *
+     * 漫画モード時は先頭画像の右半分（RIGHT_HALF）から表示を再開する。
+     */
+    fun jumpToFirstImage() {
+        stopTtsReading()
+        val state = _uiState.value
+        if (state.imageFiles.isEmpty()) return
+        _uiState.value = state.copy(
+            currentIndex = 0,
+            cropPosition = if (state.isMangaMode) CropPosition.RIGHT_HALF else CropPosition.FULL
+        )
+        if (_uiState.value.isTranslationEnabled) processTranslationForCurrentImage()
+    }
+
+    /**
+     * 現在表示中の画像を維持したまま、指定ソート順で画像一覧を再ソートする。
+     *
+     * [責任]: ソート順変更時の一覧再構築と表示位置の維持。
+     * [影響する状態]: ViewerUiState.imageFiles, currentIndex。
+     * [潜在的エラー]: 現在画像が取得できない場合は何もしない。
+     *
+     * 位置維持の基準は [ViewerUiState.anchorFilePath]（ビューワ起動時の起点画像）を優先し、
+     * 未設定の場合は現在表示中の画像を用いる。
+     */
     private fun resortCurrentImages(sortOrder: SortOrder) {
-        val currentFile = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex)
-        if (currentFile != null && currentFile.parentFile != null) {
-            viewModelScope.launch {
-                val sorted = storageManager.getImageFiles(
-                    directory = currentFile.parentFile!!,
-                    sortOrder = sortOrder,
-                    showHiddenFiles = _uiState.value.showHiddenFiles
-                )
-                val newIndex = sorted.indexOfFirst { it.absolutePath == currentFile.absolutePath }.coerceAtLeast(0)
-                _uiState.value = _uiState.value.copy(
-                    imageFiles = sorted,
-                    currentIndex = newIndex
-                )
-            }
+        val state = _uiState.value
+        val currentFile = state.imageFiles.getOrNull(state.currentIndex)
+        val anchorPath = state.anchorFilePath
+            ?: currentFile?.absolutePath
+            ?: return
+        val targetDir = currentFile?.parentFile ?: return
+
+        viewModelScope.launch {
+            val sorted = storageManager.getImageFiles(
+                directory = targetDir,
+                sortOrder = sortOrder,
+                showHiddenFiles = state.showHiddenFiles
+            )
+            val newIndex = sorted.indexOfFirst { it.absolutePath == anchorPath }.coerceAtLeast(0)
+            _uiState.value = _uiState.value.copy(
+                imageFiles = sorted,
+                currentIndex = newIndex
+            )
         }
     }
 
@@ -229,7 +299,7 @@ class ViewerViewModel(
         viewModelScope.launch {
             val subDirs = storageManager.getSubDirectories(
                 directory = parentDir,
-                sortOrder = _uiState.value.explorerSortOrder,
+                sortOrder = _uiState.value.viewerSortOrder,
                 showHiddenFiles = _uiState.value.showHiddenFiles
             )
             val currentIndex = subDirs.indexOfFirst { it.absolutePath == currentDir.absolutePath }
@@ -245,6 +315,7 @@ class ViewerViewModel(
                         _uiState.value = _uiState.value.copy(
                             imageFiles = images,
                             currentIndex = 0,
+                            anchorFilePath = images.first().absolutePath,
                             cropPosition = if (_uiState.value.isMangaMode) CropPosition.RIGHT_HALF else CropPosition.FULL
                         )
                         if (_uiState.value.isTranslationEnabled) processTranslationForCurrentImage()
@@ -264,7 +335,7 @@ class ViewerViewModel(
         viewModelScope.launch {
             val subDirs = storageManager.getSubDirectories(
                 directory = parentDir,
-                sortOrder = _uiState.value.explorerSortOrder,
+                sortOrder = _uiState.value.viewerSortOrder,
                 showHiddenFiles = _uiState.value.showHiddenFiles
             )
             val currentIndex = subDirs.indexOfFirst { it.absolutePath == currentDir.absolutePath }
@@ -280,6 +351,7 @@ class ViewerViewModel(
                         _uiState.value = _uiState.value.copy(
                             imageFiles = images,
                             currentIndex = images.size - 1,
+                            anchorFilePath = images.last().absolutePath,
                             cropPosition = if (_uiState.value.isMangaMode) CropPosition.LEFT_HALF else CropPosition.FULL
                         )
                         if (_uiState.value.isTranslationEnabled) processTranslationForCurrentImage()
