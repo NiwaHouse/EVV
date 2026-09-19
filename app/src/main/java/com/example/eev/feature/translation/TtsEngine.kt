@@ -10,7 +10,7 @@ import java.util.Locale
 /**
  * Android の TextToSpeech (TTS) エンジンをラップしたテキスト音声読み上げユーティリティ。
  *
- * [責任]: テキストの連続順次発話、言語切り替え、再生終了通知、初期化失敗時のエンジンパッケージ自動フォールバック。
+ * [責任]: テキストの連続順次発話、言語・読み上げ速度の切り替え、再生終了通知、初期化失敗時のエンジンパッケージ自動フォールバック。
  * [影響する状態]: 音声出力。
  */
 class TtsEngine(private val context: Context) : TextToSpeech.OnInitListener {
@@ -84,8 +84,19 @@ class TtsEngine(private val context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
-    fun speak(text: String, language: Language, onDone: () -> Unit) {
-        Log.d("EEV_TTS", "speak requested: text='$text', lang=$language, initialized=$isInitialized")
+    /**
+     * 指定テキストを指定言語・指定速度で発話し、完了時に [onDone] を呼び出す。
+     *
+     * [責任]: 言語・速度を適用した 1 件の発話要求と、完了／失敗の単一通知。
+     * [影響する状態]: TTS エンジン内部の再生キュー（QUEUE_FLUSH のため常に単一発話）。
+     * [潜在的エラー]: 未初期化時は要求を保留し、初期化完了後に再実行する。
+     * 発話開始に失敗した場合は即座に [onDone] を呼び、呼び出し側の待機を解放する。
+     *
+     * @param speechRate 読み上げ速度（0.5〜2.0 倍）。範囲外の値は [MIN_SPEECH_RATE]〜[MAX_SPEECH_RATE] に丸める。
+     */
+    fun speak(text: String, language: Language, onDone: () -> Unit, speechRate: Float = 1.0f) {
+        val rate = speechRate.coerceIn(MIN_SPEECH_RATE, MAX_SPEECH_RATE)
+        Log.d("EEV_TTS", "speak requested: text='$text', lang=$language, rate=$rate, initialized=$isInitialized")
         if (text.isBlank()) {
             Log.d("EEV_TTS", "Text is blank. Skipping speech.")
             onDone()
@@ -94,7 +105,7 @@ class TtsEngine(private val context: Context) : TextToSpeech.OnInitListener {
 
         if (!isInitialized) {
             Log.w("EEV_TTS", "TTS not initialized yet. Saving task to pendingSpeakTask.")
-            pendingSpeakTask = { speak(text, language, onDone) }
+            pendingSpeakTask = { speak(text, language, onDone, rate) }
             return
         }
 
@@ -114,6 +125,10 @@ class TtsEngine(private val context: Context) : TextToSpeech.OnInitListener {
             Log.w("EEV_TTS", "Language $locale missing/not supported. Fallback to default.")
             tts?.language = Locale.getDefault()
         }
+
+        // 読み上げ速度は setLanguage の後、speak の前に毎回適用する。
+        // 端末によっては setLanguage で速度が既定値へ戻るため、適用順序を固定する。
+        tts?.setSpeechRate(rate)
 
         val utteranceId = "EEV_UTTERANCE_${System.currentTimeMillis()}_${(0..999).random()}"
         val params = android.os.Bundle()
@@ -143,5 +158,13 @@ class TtsEngine(private val context: Context) : TextToSpeech.OnInitListener {
             tts = null
         }
         pendingSpeakTask = null
+    }
+
+    companion object {
+        /** 読み上げ速度の下限（倍）。 */
+        private const val MIN_SPEECH_RATE = 0.5f
+
+        /** 読み上げ速度の上限（倍）。 */
+        private const val MAX_SPEECH_RATE = 2.0f
     }
 }

@@ -305,8 +305,16 @@ fun EEVApp(
                 onPreviousPage = { viewerViewModel.onPreviousClicked() },
                 onCloseViewer = { currentScreen = Screen.Explorer },
                 onOpenSettingsBottomSheet = { viewerViewModel.toggleBottomSheet(true) },
-                onStartTts = { viewerViewModel.startTtsReading() },
-                onStopTts = { viewerViewModel.stopTtsReading() },
+                onToggleAudiblePlayback = { viewerViewModel.toggleAudiblePlayback() },
+                onAudibleModeChanged = { mode -> viewerViewModel.updateAudibleMode(mode) },
+                onAudibleSilentWaitSecondsChanged = { seconds ->
+                    viewerViewModel.updateAudibleSilentWaitSeconds(seconds)
+                },
+                onAudibleSpeechRateChanged = { rate -> viewerViewModel.updateAudibleSpeechRate(rate) },
+                onConfirmAudibleModelDownload = { viewerViewModel.confirmAudibleModelDownload() },
+                onCancelAudibleModelDownload = { viewerViewModel.cancelAudibleModelDownload() },
+                onAppBackgrounded = { viewerViewModel.onAppMovedToBackground() },
+                onAppForegrounded = { viewerViewModel.onAppMovedToForeground() },
                 onMangaModeChanged = { enabled -> viewerViewModel.updateMangaMode(enabled) },
                 onTranslationEnabledChanged = { enabled -> viewerViewModel.updateTranslationEnabled(enabled) },
                 onTextColorHexChanged = { hex -> viewerViewModel.updateTextColorHex(hex) },

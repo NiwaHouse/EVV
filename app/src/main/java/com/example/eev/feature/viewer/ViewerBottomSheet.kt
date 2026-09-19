@@ -22,6 +22,7 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,11 +35,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.example.eev.core.model.AudibleMode
 import com.example.eev.core.model.Language
 import com.example.eev.core.model.SortOrder
 import com.example.eev.settings.BG_COLOR_OPTIONS
 import com.example.eev.settings.LanguageDropdownSelector
 import com.example.eev.settings.TEXT_COLOR_OPTIONS
+
+/** 無音時待機秒数のスライダー範囲（1.0〜10.0 秒）。 */
+private val AUDIBLE_SILENT_WAIT_RANGE = 1.0f..10.0f
+
+/** 0.5 秒刻みを実現するためのステップ数（(10.0-1.0)/0.5 - 1）。 */
+private const val AUDIBLE_SILENT_WAIT_STEPS = 17
+
+/** 読み上げ速度のスライダー範囲（0.5〜2.0 倍）。 */
+private val AUDIBLE_SPEECH_RATE_RANGE = 0.5f..2.0f
+
+/** 0.1 倍刻みを実現するためのステップ数（(2.0-0.5)/0.1 - 1）。 */
+private const val AUDIBLE_SPEECH_RATE_STEPS = 14
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +73,12 @@ fun ViewerBottomSheet(
     onTargetLanguageChanged: (Language) -> Unit,
     viewerSortOrder: SortOrder,
     onViewerSortOrderChanged: (SortOrder) -> Unit,
+    audibleMode: AudibleMode,
+    onAudibleModeChanged: (AudibleMode) -> Unit,
+    audibleSilentWaitSeconds: Float,
+    onAudibleSilentWaitSecondsChanged: (Float) -> Unit,
+    audibleSpeechRate: Float,
+    onAudibleSpeechRateChanged: (Float) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -133,6 +153,72 @@ fun ViewerBottomSheet(
                     onCheckedChange = onShowHiddenFilesChanged
                 )
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // オーディブル再生は 2 トグルで排他選択する。
+            // 片方を ON にすると他方の値（OFF）が書き込まれ、自動的に解除される。
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "オーディブル再生（原文を読み上げ）",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Switch(
+                    checked = audibleMode == AudibleMode.READ_RAW,
+                    onCheckedChange = { checked ->
+                        onAudibleModeChanged(if (checked) AudibleMode.READ_RAW else AudibleMode.OFF)
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "翻訳してからオーディブル再生",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Switch(
+                    checked = audibleMode == AudibleMode.READ_TRANSLATED,
+                    onCheckedChange = { checked ->
+                        onAudibleModeChanged(if (checked) AudibleMode.READ_TRANSLATED else AudibleMode.OFF)
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "無音時の待機時間: ${"%.1f".format(audibleSilentWaitSeconds)} 秒",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Slider(
+                value = audibleSilentWaitSeconds,
+                onValueChange = onAudibleSilentWaitSecondsChanged,
+                valueRange = AUDIBLE_SILENT_WAIT_RANGE,
+                steps = AUDIBLE_SILENT_WAIT_STEPS
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "読み上げ速度: ${"%.1f".format(audibleSpeechRate)} 倍",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Slider(
+                value = audibleSpeechRate,
+                onValueChange = onAudibleSpeechRateChanged,
+                valueRange = AUDIBLE_SPEECH_RATE_RANGE,
+                steps = AUDIBLE_SPEECH_RATE_STEPS
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 

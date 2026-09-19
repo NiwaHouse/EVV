@@ -5,8 +5,10 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.eev.core.model.AudibleMode
 import com.example.eev.core.model.Language
 import com.example.eev.core.model.SortOrder
 import com.example.eev.core.model.ThumbnailSize
@@ -18,7 +20,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 /**
  * アプリ全体の設定値を DataStore Preferences により永続化・管理するクラス。
  *
- * [責任]: 漫画モードON/OFF、翻訳ON/OFF、言語設定、ソート順の保存と非同期読み込み。
+ * [責任]: 漫画モードON/OFF、翻訳ON/OFF、言語設定、ソート順、オーディブル再生設定の保存と非同期読み込み。
  * [影響する状態]: 永続化された設定値全般。
  * [潜在的エラー]: DataStore読み書き失敗時のIOException発生可能性（デフォルト値返却で保護）。
  */
@@ -38,6 +40,27 @@ class EEVDataStore(private val context: Context) {
         private val KEY_SCROLL_POSITIONS = stringPreferencesKey("explorer_scroll_positions")
         private val KEY_THUMBNAIL_SIZE = stringPreferencesKey("thumbnail_size")
         private val KEY_SHOW_ITEM_INFO = booleanPreferencesKey("show_item_info")
+        private val KEY_AUDIBLE_MODE = stringPreferencesKey("audible_mode")
+        private val KEY_AUDIBLE_SILENT_WAIT = floatPreferencesKey("audible_silent_wait_seconds")
+        private val KEY_AUDIBLE_SPEECH_RATE = floatPreferencesKey("audible_speech_rate")
+
+        /** 無音時待機秒数の既定値（秒）。 */
+        private const val DEFAULT_AUDIBLE_SILENT_WAIT_SECONDS = 3.0f
+
+        /** 無音時待機秒数の下限（秒）。 */
+        private const val MIN_AUDIBLE_SILENT_WAIT_SECONDS = 1.0f
+
+        /** 無音時待機秒数の上限（秒）。 */
+        private const val MAX_AUDIBLE_SILENT_WAIT_SECONDS = 10.0f
+
+        /** 読み上げ速度の既定値（倍）。 */
+        private const val DEFAULT_AUDIBLE_SPEECH_RATE = 1.0f
+
+        /** 読み上げ速度の下限（倍）。 */
+        private const val MIN_AUDIBLE_SPEECH_RATE = 0.5f
+
+        /** 読み上げ速度の上限（倍）。 */
+        private const val MAX_AUDIBLE_SPEECH_RATE = 2.0f
     }
 
     val isMangaModeEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
@@ -94,6 +117,32 @@ class EEVDataStore(private val context: Context) {
      */
     val showItemInfo: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[KEY_SHOW_ITEM_INFO] ?: false
+    }
+
+    /**
+     * オーディブル再生モード（OFF / READ_RAW / READ_TRANSLATED）。
+     * 未設定・未知値の場合は [AudibleMode.OFF] を既定とする。
+     */
+    val audibleMode: Flow<AudibleMode> = context.dataStore.data.map { prefs ->
+        AudibleMode.fromName(prefs[KEY_AUDIBLE_MODE] ?: AudibleMode.OFF.name)
+    }
+
+    /**
+     * 文字が 1 件も検出できなかった場合に次の画像へ進むまでの無音時待機秒数。
+     * 未設定時は 3.0 秒を既定とし、1.0〜10.0 秒に丸める。
+     */
+    val audibleSilentWaitSeconds: Flow<Float> = context.dataStore.data.map { prefs ->
+        (prefs[KEY_AUDIBLE_SILENT_WAIT] ?: DEFAULT_AUDIBLE_SILENT_WAIT_SECONDS)
+            .coerceIn(MIN_AUDIBLE_SILENT_WAIT_SECONDS, MAX_AUDIBLE_SILENT_WAIT_SECONDS)
+    }
+
+    /**
+     * オーディブル再生の読み上げ速度（倍）。
+     * 未設定時は 1.0 倍を既定とし、0.5〜2.0 倍に丸める。
+     */
+    val audibleSpeechRate: Flow<Float> = context.dataStore.data.map { prefs ->
+        (prefs[KEY_AUDIBLE_SPEECH_RATE] ?: DEFAULT_AUDIBLE_SPEECH_RATE)
+            .coerceIn(MIN_AUDIBLE_SPEECH_RATE, MAX_AUDIBLE_SPEECH_RATE)
     }
 
     /**
@@ -175,6 +224,43 @@ class EEVDataStore(private val context: Context) {
     suspend fun setShowItemInfo(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_SHOW_ITEM_INFO] = enabled
+        }
+    }
+
+    /**
+     * オーディブル再生モードを永続化する。
+     *
+     * [責任]: 3 状態（OFF / READ_RAW / READ_TRANSLATED）の保存。
+     * [影響する状態]: `audible_mode`。
+     * [潜在的エラー]: DataStore 書き込み失敗時は IOException の可能性あり。
+     */
+    suspend fun setAudibleMode(mode: AudibleMode) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_AUDIBLE_MODE] = mode.name
+        }
+    }
+
+    /**
+     * 無音時待機秒数を永続化する（1.0〜10.0 秒に丸める）。
+     */
+    suspend fun setAudibleSilentWaitSeconds(seconds: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_AUDIBLE_SILENT_WAIT] = seconds.coerceIn(
+                MIN_AUDIBLE_SILENT_WAIT_SECONDS,
+                MAX_AUDIBLE_SILENT_WAIT_SECONDS
+            )
+        }
+    }
+
+    /**
+     * 読み上げ速度（倍）を永続化する（0.5〜2.0 倍に丸める）。
+     */
+    suspend fun setAudibleSpeechRate(rate: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_AUDIBLE_SPEECH_RATE] = rate.coerceIn(
+                MIN_AUDIBLE_SPEECH_RATE,
+                MAX_AUDIBLE_SPEECH_RATE
+            )
         }
     }
 

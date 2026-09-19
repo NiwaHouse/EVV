@@ -23,11 +23,14 @@ DataStore のファイル名は `eev_settings`。
 | `explorer_scroll_positions` | `String` | `""` | フォルダパスをキーとしたエクスプローラのスクロール位置（先頭表示インデックス）マップ。`パス=インデックス` を改行で連結した文字列で保存。 |
 | `thumbnail_size` | `String` | `"MEDIUM"` | エクスプローラのサムネイル表示サイズ。`ThumbnailSize` enum の `name` 値（`SMALL`, `MEDIUM`, `LARGE`）。 |
 | `show_item_info` | `Boolean` | `false` | エクスプローラで日付・枚数などの付加情報を表示するか。 |
+| `audible_mode` | `String` | `"OFF"` | オーディブル再生モード。`AudibleMode` enum の `name` 値（`OFF`, `READ_RAW`, `READ_TRANSLATED`）。ビューワ起動時の自動再生可否に影響。 |
+| `audible_silent_wait_seconds` | `Float` | `3.0f` | テキスト未検出画像を表示し続ける秒数。UIは1〜10秒・0.5秒刻みのスライダー。 |
+| `audible_speech_rate` | `Float` | `1.0f` | TTS の読み上げ速度（0.5〜2.0倍）。 |
 
 ### 1.1 読み書きAPI
 
 * 読み込み: 各設定値は `Flow<T>` として公開され、`ViewModel` 側で `collectLatest` により購読される。
-* 書き込み: `setMangaModeEnabled` / `setTranslationEnabled` / `setSourceLanguage` / `setTargetLanguage` / `setSortOrder` / `setViewMode` / `setShowHiddenFiles` / `setTextColorHex` / `setBackgroundColorHex` / `setViewerSortOrder` / `setThumbnailSize` / `setShowItemInfo` / `setScrollPosition` の各 suspend 関数により更新する。
+* 書き込み: `setMangaModeEnabled` / `setTranslationEnabled` / `setSourceLanguage` / `setTargetLanguage` / `setSortOrder` / `setViewMode` / `setShowHiddenFiles` / `setTextColorHex` / `setBackgroundColorHex` / `setViewerSortOrder` / `setThumbnailSize` / `setShowItemInfo` / `setScrollPosition` / `setAudibleMode` / `setAudibleSilentWaitSeconds` / `setAudibleSpeechRate` の各 suspend 関数により更新する。
 * エラー時: DataStore 読み書き失敗時はデフォルト値を返却して保護する。
 * `explorer_scroll_positions` は `explorerScrollPositions: Flow<Map<String, Int>>` として公開し、`ExplorerViewModel.scrollPositions`（`StateFlow`）経由で画面に配信する。パスに `=` または改行を含む場合は保存をスキップする。
 
@@ -83,8 +86,14 @@ DataStore のファイル名は `eev_settings`。
 | `isBottomSheetVisible` | `Boolean` | `false` | 設定ボトムシートの表示/非表示。 |
 | `translationOverlayItems` | `List<TranslatedOverlayItem>` | `emptyList()` | OCR・翻訳のオーバーレイ表示データ。 |
 | `isTranslating` | `Boolean` | `false` | 翻訳処理の実行中フラグ。 |
-| `isReadingTts` | `Boolean` | `false` | TTS読み上げの実行中フラグ。 |
-| `readingTtsIndex` | `Int` | `-1` | 現在読み上げ中のオーバーレイ項目インデックス（未実行時は `-1`）。 |
+| `audibleMode` | `AudibleMode` | `AudibleMode.OFF` | オーディブル再生モード。DataStore の `audible_mode` を購読して反映する。 |
+| `isAudiblePlaying` | `Boolean` | `false` | オーディブル再生の実行中フラグ。 |
+| `audibleItemIndex` | `Int` | `-1` | 現在読み上げ中の項目インデックス（未実行時は `-1`）。 |
+| `audibleHalf` | `CropPosition` | `CropPosition.FULL` | 漫画モード時の読み上げ進行位置（右→左→次ページ）。 |
+| `audibleSilentWaitSeconds` | `Float` | `3.0f` | テキスト未検出時に画像を表示し続ける秒数（DataStore 値を反映）。 |
+| `audibleSpeechRate` | `Float` | `1.0f` | TTS の読み上げ速度（DataStore 値を反映）。 |
+
+* 旧仕様の `isReadingTts` / `readingTtsIndex`（手動読み上げ）はオーディブル機能へ統合したため廃止する。
 
 #### 2.2.1 ソート順の唯一の真実源（Single Source of Truth）
 
@@ -96,6 +105,19 @@ DataStore のファイル名は `eev_settings`。
 * `updateViewerSortOrder()` は永続化のみを行い、表示中一覧の再ソートは行わない。
 * DataStore 値の購読（`init` 内 `collectLatest`）は、state と異なる値が通知された場合のみ `resortCurrentImages()` を実行する。これにより、`loadImagesFromDirectory` で確定した表示位置を不必要に上書きしない。
 * 再ソート時の表示位置は `anchorFilePath`（起点画像）を基準に維持する。
+
+#### 2.2.2 オーディブル再生状態機械
+
+* 再生モードは DataStore の `audible_mode` を購読して `ViewerUiState.audibleMode` に反映する（`OFF` / `READ_RAW` / `READ_TRANSLATED` の排他制御）。
+* ビューワを開いた時点で `audible_mode` が `READ_RAW` / `READ_TRANSLATED` の場合は自動的に再生を開始する。
+* パイプライン: 現在画像（漫画モード時はクロップ画像）→ OCR →（`READ_TRANSLATED` 時のみ翻訳）→ `OcrGroupMerger` の結合単位を「上→下、同じ行は右→左」順に TTS へ投入 → 読み上げ完了と同時に次の画像へ移動する。
+* テキスト未検出時は `audibleSilentWaitSeconds` 秒だけ表示して次の画像へ進む。エラー発生時はログのみ記録してスキップする（自動送りは維持）。
+* `READ_TRANSLATED` を選択した際は `is_translation_enabled` を自動的に ON にして永続化する。
+* 翻訳モデル未取得の場合は確認ダイアログを表示し、同意後にダウンロードして完了後に再生を開始する（失敗時は `audible_mode` を `OFF` に戻す）。
+* 再生はアプリ前面時のみ行い、再生中は画面を常時点灯（`KEEP_SCREEN_ON`）する。背景移行時は停止する。
+* フォルダ末尾到達時は既存の次フォルダ移動ロジックへ委譲して読み上げを継続する。手動で画像を移動した場合は移動先から継続する。
+* 先読み: `AudiblePrefetchCache` が次画像の OCR・翻訳結果を先行取得して保持する。
+* 表示: 翻訳テキストのオーバーレイは描画せず、`AudibleHighlightOverlay` が読み上げ中の検出領域を枠線でハイライトする。
 
 ### 2.3 翻訳オーバーレイ状態 (`TranslatedOverlayItem`)
 
@@ -167,3 +189,11 @@ DataStore のファイル名は `eev_settings`。
 | `lastModified` | `Long` | `file.lastModified()` | 更新日時（ミリ秒）。 |
 | `imageCount` | `Int` | `0` | フォルダ内の画像数。 |
 | `firstImagePath` | `String?` | `null` | フォルダ先頭画像のパス（サムネイル用）。 |
+
+### 3.6 `AudibleMode` (`core/model/AudibleMode.kt`)
+
+| 値 | 説明 |
+| :--- | :--- |
+| `OFF` | オーディブル停止。 |
+| `READ_RAW` | OCR 結果を翻訳せず、`source_language` の音声で読み上げる。 |
+| `READ_TRANSLATED` | OCR → 翻訳を行い、`target_language` の音声で読み上げる（`is_translation_enabled` を自動 ON）。 |

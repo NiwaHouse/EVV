@@ -2,7 +2,9 @@ package com.example.eev.feature.translation
 
 import com.example.eev.core.model.Language
 import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
@@ -105,6 +107,66 @@ class TranslationEngine {
         result = result.replace(Regex("ません[。.]?"), "ない")
         return result
     }
+
+    /**
+     * 指定言語ペアの翻訳モデルが端末にダウンロード済みかどうかを判定する。
+     *
+     * [責任]: オーディブル再生（翻訳モード）開始前に、通信なしで再生可能かを判定する。
+     * [影響する状態]: なし（翻訳エンジンの内部状態は変更しない）。
+     * [潜在的エラー]: 判定失敗時は false（未取得）として扱い、呼び出し側でダウンロード導線へ進める。
+     *
+     * オンデバイス翻訳モデルは初回のみダウンロードが必要なため、
+     * 「モデル未取得」を検出してユーザー同意のうえ取得する導線に用いる。
+     */
+    suspend fun areModelsReady(sourceLanguage: Language, targetLanguage: Language): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            val manager = RemoteModelManager.getInstance()
+            val sourceModel = TranslateRemoteModel.Builder(mapLanguage(sourceLanguage)).build()
+            val targetModel = TranslateRemoteModel.Builder(mapLanguage(targetLanguage)).build()
+            manager.isModelDownloaded(sourceModel)
+                .addOnSuccessListener { sourceReady ->
+                    if (!continuation.isActive) return@addOnSuccessListener
+                    if (!sourceReady) {
+                        continuation.resume(false)
+                        return@addOnSuccessListener
+                    }
+                    manager.isModelDownloaded(targetModel)
+                        .addOnSuccessListener { targetReady ->
+                            if (continuation.isActive) continuation.resume(targetReady)
+                        }
+                        .addOnFailureListener {
+                            if (continuation.isActive) continuation.resume(false)
+                        }
+                }
+                .addOnFailureListener {
+                    if (continuation.isActive) continuation.resume(false)
+                }
+        }
+
+    /**
+     * 指定言語ペアの翻訳モデルのダウンロードを実行する（取得済みの場合は即座に成功する）。
+     *
+     * [責任]: ユーザー同意後のモデル取得。
+     * [影響する状態]: 端末内の ML Kit 翻訳モデル。
+     * [潜在的エラー]: オフライン等で取得に失敗した場合は false を返す（例外は投げない）。
+     */
+    suspend fun downloadModels(sourceLanguage: Language, targetLanguage: Language): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            val options = TranslatorOptions.Builder()
+                .setSourceLanguage(mapLanguage(sourceLanguage))
+                .setTargetLanguage(mapLanguage(targetLanguage))
+                .build()
+            val translator = Translation.getClient(options)
+            translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
+                .addOnSuccessListener {
+                    translator.close()
+                    if (continuation.isActive) continuation.resume(true)
+                }
+                .addOnFailureListener {
+                    translator.close()
+                    if (continuation.isActive) continuation.resume(false)
+                }
+        }
 
     fun close() {
         currentTranslator?.close()
