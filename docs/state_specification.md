@@ -108,6 +108,9 @@ DataStore のファイル名は `eev_settings`。
 
 #### 2.2.2 オーディブル再生状態機械
 
+* 状態機械の本体は `feature/viewer/AudibleSessionController.kt` に集約し、`ViewerViewModel` は公開API（`requestStart` / `start` / `stop` / `onMovedToBackground` / `onMovedToForeground`）へ委譲する。UI状態は `stateProvider`（`{ _uiState.value }`）と `stateUpdater`（`_uiState.value = block(...)`）のラムダ注入により、`ViewerViewModel` の `MutableStateFlow` を唯一の真実源として更新する。
+* 再生セッションは世代番号（セッションID）で管理し、画像送り・モード変更・停止のたびに世代を更新して古い世代の TTS 完了コールバックを無視する。
+* 再生台本の生成は `feature/viewer/AudibleScriptProvider.kt` が担い、キャッシュ優先で提供する。
 * 再生モードは DataStore の `audible_mode` を購読して `ViewerUiState.audibleMode` に反映する（`OFF` / `READ_RAW` / `READ_TRANSLATED` の排他制御）。
 * ビューワを開いた時点で `audible_mode` が `READ_RAW` / `READ_TRANSLATED` の場合は自動的に再生を開始する。
 * パイプライン: 現在画像（漫画モード時はクロップ画像）→ OCR →（`READ_TRANSLATED` 時のみ翻訳）→ `OcrGroupMerger` の結合単位を「上→下、同じ行は右→左」順に TTS へ投入 → 読み上げ完了と同時に次の画像へ移動する。
