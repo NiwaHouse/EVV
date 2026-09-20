@@ -12,7 +12,8 @@ import java.io.File
  * オーディブル再生用の読み上げ台本（[AudibleUnit] 列）を生成するプロバイダ。
  *
  * [責任]: DB ファイルの存在確認、読み取り専用オープン、スキーマ版検証、有効行（`error = ''`）の抽出、
- *          モード別の採用列選択、TTS 入力上限に応じた段落分割、および [AudibleUnit] 列への変換。
+ *          モード別の採用列選択、TTS 入力上限に応じた段落分割、[AudibleUnit] 列への変換、
+ *          および取得元（DB 採用／OCR フォールバック）の切り分けログ出力。
  * [影響する状態]: なし（永続化状態・UI 状態を一切変更しない。DB への書き込みも行わない）。
  * [潜在的エラー]: DB 不在・スキーマ版不一致・`SQLiteException`・対象行なしの場合は `null` を返し、
  *                  呼び出し側（[AudibleScriptProvider]）がオンデバイス OCR 経路へフォールバックする。
@@ -56,12 +57,18 @@ object TransImageDbProvider {
     /** `SELECT_COLUMNS` 内の `polished_text` インデックス。 */
     private const val COLUMN_POLISHED_TEXT = 4
 
+    /** フォールバック理由ログに列挙する `dst_lang` の最大件数（ログ肥大化の抑止）。 */
+    private const val LOG_ROW_SUMMARY_LIMIT = 3
+
     /**
      * 対象画像に対応する読み上げ台本を DB から生成する。
      *
-     * [責任]: DB 存在判定、クロップ位置に応じた適用可否判定、読み取り・分割の統括。
-     * [影響する状態]: なし。
+     * [責任]: DB 存在判定、クロップ位置に応じた適用可否判定、読み取り・分割の統括、取得元の切り分けログ出力。
+     * [影響する状態]: なし（ログ出力のみ）。
      * [潜在的エラー]: なし（取得不可時は `null`、DB 適用済みで本文が無い場合は空リスト）。
+     *
+     * 取得元の切り分けは `adb logcat -s EEV_TRANS_DB`（[TAG]）で確認できる。
+     * 画像 1 枚につき「DB 採用」は `Log.i` 1 行、「DB 不使用 → OCR経路」は `Log.d` 1 行を出力する。
      *
      * @param file 読み上げ対象の画像ファイル。
      * @param cropPosition 漫画モードの表示位置。`LEFT_HALF` はページ単位 DB の二重読み上げを避けるため空台本を返す。
@@ -75,20 +82,60 @@ object TransImageDbProvider {
         mode: AudibleMode,
         targetLanguage: Language
     ): List<AudibleUnit>? {
-        if (mode == AudibleMode.OFF) return null
+        if (mode == AudibleMode.OFF) {
+            logFallback(file.name, "オーディブルOFF")
+            return null
+        }
 
         // ルート直下など親を持たないパスでは DB を参照できないため、OCR 経路へ委譲する。
-        val parent = file.parentFile ?: return null
+        val parent = file.parentFile
+        if (parent == null) {
+            logFallback(file.name, "親フォルダなし（ルート直下）")
+            return null
+        }
         val dbFile = TransDbFile.of(parent)
-        if (!dbFile.isFile) return null
+        if (!dbFile.isFile) {
+            logFallback(file.name, "翻訳DBなし: ${dbFile.absolutePath}")
+            return null
+        }
 
         // 漫画モードの左半分はページ全文を読んだ後の表示のため、DB 台本を返さず無音時待機へ委ねる。
-        if (cropPosition == CropPosition.LEFT_HALF) return emptyList()
+        if (cropPosition == CropPosition.LEFT_HALF) {
+            Log.d(TAG, "[${file.name}] DB 適用・空台本（漫画モード左半分 → 無音時待機）")
+            return emptyList()
+        }
 
-        val spokenText = readSpokenText(dbFile, file.name, mode, targetLanguage.code) ?: return null
-        if (spokenText.isBlank()) return null
+        val spokenText = readSpokenText(dbFile, file.name, mode, targetLanguage.code)
+        if (spokenText == null) {
+            logFallback(file.name, "DB行なし／本文空（原因は直前の詳細ログを参照）")
+            return null
+        }
+        if (spokenText.isBlank()) {
+            logFallback(file.name, "本文が空白のみ")
+            return null
+        }
 
-        return splitIntoUnits(spokenText)
+        val units = splitIntoUnits(spokenText)
+        Log.i(
+            TAG,
+            "[${file.name}] DB採用: mode=${mode.name}, dst=${targetLanguage.code}, " +
+                "文字数=${spokenText.length}, 発話数=${units.size}"
+        )
+        return units
+    }
+
+    /**
+     * DB を使用せず OCR 経路へ委譲する理由をログ出力する。
+     *
+     * [責任]: フォールバック理由の可視化（[TAG] による切り分け支援）。
+     * [影響する状態]: なし（ログ出力のみ）。
+     * [潜在的エラー]: なし。
+     *
+     * @param imageName 対象画像のファイル名。
+     * @param reason フォールバック理由。
+     */
+    private fun logFallback(imageName: String, reason: String) {
+        Log.d(TAG, "[$imageName] DB不使用 → OCR経路: $reason")
     }
 
     /**
@@ -107,18 +154,21 @@ object TransImageDbProvider {
         val db = try {
             SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
         } catch (e: Exception) {
-            Log.w(TAG, "DB を開けませんでした: ${dbFile.absolutePath}", e)
+            Log.w(TAG, "[$imageName] DB を開けませんでした: ${dbFile.absolutePath}", e)
             return null
         }
 
         return try {
             if (!hasSupportedSchema(db)) {
-                Log.w(TAG, "スキーマ版が想定($SUPPORTED_SCHEMA_VERSION)と異なるため DB を使用しません。")
+                Log.w(
+                    TAG,
+                    "[$imageName] スキーマ版が想定($SUPPORTED_SCHEMA_VERSION)と異なるため DB を使用しません。"
+                )
                 return null
             }
             querySpokenText(db, imageName, mode, dstLang)
         } catch (e: Exception) {
-            Log.w(TAG, "DB の読み取りに失敗しました: ${dbFile.absolutePath}", e)
+            Log.w(TAG, "[$imageName] DB の読み取りに失敗しました（列欠落・旧スキーマ等）: ${dbFile.absolutePath}", e)
             null
         } finally {
             runCatching { db.close() }
@@ -160,16 +210,41 @@ object TransImageDbProvider {
             arrayOf(imageName)
         ).use { cursor ->
             var fallback: String? = null
+            var rowCount = 0
+            var emptyTextRows = 0
+            val emptyRowDstLangs = StringBuilder()
+
             while (cursor.moveToNext()) {
+                rowCount++
+                val rowDstLang = cursor.getString(COLUMN_DST_LANG).orEmpty()
                 val spoken = pickSpokenText(
                     mode = mode,
                     sourceText = cursor.getString(COLUMN_SOURCE_TEXT).orEmpty(),
                     translatedText = cursor.getString(COLUMN_TRANSLATED_TEXT).orEmpty(),
                     polishedText = cursor.getString(COLUMN_POLISHED_TEXT).orEmpty()
-                ) ?: continue
+                )
+                if (spoken == null) {
+                    // 例: READ_TRANSLATED なのに translated_text が空（未翻訳）など、本文を採用できない行。
+                    emptyTextRows++
+                    if (emptyTextRows <= LOG_ROW_SUMMARY_LIMIT) {
+                        if (emptyRowDstLangs.isNotEmpty()) emptyRowDstLangs.append('/')
+                        emptyRowDstLangs.append(rowDstLang.ifEmpty { "(空)" })
+                    }
+                    continue
+                }
 
-                if (cursor.getString(COLUMN_DST_LANG) == dstLang) return spoken
+                if (rowDstLang == dstLang) return spoken
                 if (fallback == null) fallback = spoken
+            }
+
+            if (fallback == null) {
+                val reason = if (rowCount == 0) {
+                    "対象行なし（image_name='$imageName' かつ error='' の行が0件）"
+                } else {
+                    "行はあるが読み上げ本文が空（$emptyTextRows/$rowCount 行が必要な列を持たない / " +
+                        "mode=${mode.name}, dst_lang=${emptyRowDstLangs}）"
+                }
+                Log.d(TAG, "[$imageName] DB不使用 → OCR経路: $reason")
             }
             return fallback
         }
