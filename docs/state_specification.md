@@ -60,7 +60,7 @@ DataStore のファイル名は `eev_settings`。
 * スクロール位置: `ExplorerViewModel.scrollPositions: StateFlow<Map<String, Int>>` が DataStore の保存値を配信し、`ExplorerScreen` が `LazyListState` / `LazyGridState` の復元・保存に用いる。保存は `snapshotFlow` に `distinctUntilChanged()` と `debounce(300ms)` を適用し、スクロール停止時のみ実行する（DataStore への高頻度書き込み抑止）。
 * フォルダ移動履歴: `ExplorerViewModel` が `directoryHistory: ArrayDeque<String>`（絶対パス）を保持する。`loadDirectory(directory, recordHistory = true)` で移動前に現在フォルダを積み、`navigateBack()` で1つ戻る。権限のないフォルダへ入り込んだ際の復帰手段として機能する。履歴はメモリ上のみで永続化しない。
 * 重複ロード抑止: `sortOrder` / `showHiddenFiles` の DataStore 初回購読通知では再ロードせず、値が実際に変化した場合のみ `loadDirectory` を実行する（`isInitialLoadDone` フラグで管理）。
-* メタデータ反映: フォルダのサムネイル・画像数は `METADATA_BATCH_SIZE`（8件）ごと、および完了時に一括反映し、再コンポーズ回数を抑える。
+* メタデータ反映: フォルダのサムネイル・画像数・**翻訳 DB 有無（`hasTransDb`）**は `METADATA_BATCH_SIZE`（8件）ごと、および完了時に一括反映し、再コンポーズ回数を抑える。取得は `FileStorageManager.getFolderMetadata()` が返す `FolderMetadata`（画像数・先頭画像パス・翻訳 DB 有無）を1回の走査で賄い、項目単位の追加走査は行わない。
 
 * 派生プロパティ `filteredFileItems`: `List<FileItem>` - `searchQuery` が空なら `fileItems` をそのまま返し、そうでなければ `name` に `searchQuery` を部分一致（大文字小文字無視）で含む要素に絞り込んだ一覧。
 
@@ -195,6 +195,7 @@ DataStore のファイル名は `eev_settings`。
 | `lastModified` | `Long` | `file.lastModified()` | 更新日時（ミリ秒）。 |
 | `imageCount` | `Int` | `0` | フォルダ内の画像数。 |
 | `firstImagePath` | `String?` | `null` | フォルダ先頭画像のパス（サムネイル用）。 |
+| `hasTransDb` | `Boolean` | `false` | 直下に trans_image 翻訳 DB（`.trans_image.db`）が存在するか。フォルダのチェックバッジ表示判定の唯一の源。 |
 
 ### 3.6 `AudibleMode` (`core/model/AudibleMode.kt`)
 
@@ -203,3 +204,23 @@ DataStore のファイル名は `eev_settings`。
 | `OFF` | オーディブル停止。 |
 | `READ_RAW` | OCR 結果を翻訳せず、`source_language` の音声で読み上げる。 |
 | `READ_TRANSLATED` | OCR → 翻訳を行い、`target_language` の音声で読み上げる（`is_translation_enabled` を自動 ON）。 |
+
+### 3.7 `FolderMetadata` (`core/storage/FolderMetadata.kt`)
+
+`FileStorageManager.getFolderMetadata()` の戻り値。永続化・画面状態には保持されず、`ExplorerViewModel` が `FileItem` へ写像するための中間モデル。
+
+| フィールド | データ型 | デフォルト値 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `imageCount` | `Int` | `0` | 直下の表示対象画像ファイル数。 |
+| `firstImagePath` | `String?` | `null` | 直下で名前順最先の画像の絶対パス（サムネイル生成の入力）。 |
+| `hasTransDb` | `Boolean` | `false` | 直下に trans_image 翻訳 DB が存在するか（`TransDbFile.existsIn()`）。 |
+
+### 3.8 `TransDbFile` (`core/storage/TransDbFile.kt`)
+
+trans_image 翻訳 DB のファイル名（`.trans_image.db`）の一元定義。Core が定義を保持し、Viewer Plugin（`TransImageDbProvider`）とエクスプローラのチェックバッジ判定がともに参照する。
+
+| メンバ | シグネチャ | 説明 |
+| :--- | :--- | :--- |
+| `FILE_NAME` | `const val FILE_NAME: String` | DB ファイル名（`.trans_image.db`）。 |
+| `of` | `fun of(folder: File): File` | フォルダ直下の DB ファイルを解決する（存在確認は行わない）。 |
+| `existsIn` | `fun existsIn(folder: File): Boolean` | 直下 1 階層のみの存在確認。権限エラー時は `false`。 |

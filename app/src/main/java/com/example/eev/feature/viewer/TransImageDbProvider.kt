@@ -4,6 +4,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import com.example.eev.core.model.AudibleMode
 import com.example.eev.core.model.Language
+import com.example.eev.core.storage.TransDbFile
 import java.io.File
 
 /**
@@ -21,8 +22,8 @@ import java.io.File
  */
 object TransImageDbProvider {
 
-    /** trans_image が対象フォルダ直下に生成する DB ファイル名（隠しファイル）。 */
-    const val DB_FILE_NAME = ".trans_image.db"
+    /** trans_image が対象フォルダ直下に生成する DB ファイル名（Core の [TransDbFile] に一元定義）。 */
+    const val DB_FILE_NAME = TransDbFile.FILE_NAME
 
     /** 本プロバイダが解釈できるスキーマ版（`meta.schema_version`）。 */
     private const val SUPPORTED_SCHEMA_VERSION = "2"
@@ -76,7 +77,9 @@ object TransImageDbProvider {
     ): List<AudibleUnit>? {
         if (mode == AudibleMode.OFF) return null
 
-        val dbFile = File(file.parentFile, DB_FILE_NAME)
+        // ルート直下など親を持たないパスでは DB を参照できないため、OCR 経路へ委譲する。
+        val parent = file.parentFile ?: return null
+        val dbFile = TransDbFile.of(parent)
         if (!dbFile.isFile) return null
 
         // 漫画モードの左半分はページ全文を読んだ後の表示のため、DB 台本を返さず無音時待機へ委ねる。

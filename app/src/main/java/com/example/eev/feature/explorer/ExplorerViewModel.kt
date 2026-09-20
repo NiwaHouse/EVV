@@ -9,6 +9,7 @@ import com.example.eev.core.model.SortOrder
 import com.example.eev.core.model.ThumbnailSize
 import com.example.eev.core.model.ViewMode
 import com.example.eev.core.storage.FileStorageManager
+import com.example.eev.core.storage.FolderMetadata
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -219,21 +220,21 @@ class ExplorerViewModel(
      */
     private fun loadFolderMetadataAsync(items: List<FileItem>) {
         viewModelScope.launch(Dispatchers.IO) {
-            // パス -> (画像数, サムネイルパス) の差分マップ
-            val updates = mutableMapOf<String, Pair<Int, String?>>()
+            // パス -> フォルダメタ情報（画像数・サムネイルパス・翻訳 DB 有無）の差分マップ
+            val updates = mutableMapOf<String, FolderMetadata>()
             var processedSinceFlush = 0
 
             items.forEach { item ->
                 if (item.isDirectory) {
-                    val (count, firstPath) = storageManager.getFolderMetadata(
+                    val metadata = storageManager.getFolderMetadata(
                         folder = item.file,
                         showHiddenFiles = _uiState.value.showHiddenFiles
                     )
                     // サムネイルは軽量キャッシュ画像を優先し、生成できない場合は元画像パスへフォールバックする。
-                    val thumbnailPath = firstPath?.let { path ->
+                    val thumbnailPath = metadata.firstImagePath?.let { path ->
                         thumbnailCache?.getOrCreateThumbnail(path) ?: path
                     }
-                    updates[item.file.absolutePath] = count to thumbnailPath
+                    updates[item.file.absolutePath] = metadata.copy(firstImagePath = thumbnailPath)
                     processedSinceFlush++
 
                     // 一定件数ごとにまとめて反映し、再コンポーズ回数を抑える。
@@ -255,19 +256,20 @@ class ExplorerViewModel(
     /**
      * 蓄積したメタデータ差分を現在の一覧へ一括反映する。
      *
-     * [責任]: メタデータ差分のUI反映。
+     * [責任]: メタデータ差分（画像数・サムネイルパス・翻訳 DB 有無）のUI反映。
      * [影響する状態]: ExplorerUiState.fileItems。
      * [潜在的エラー]: 対象パスが一覧から消えている場合は該当項目を無視する。
      */
-    private fun applyMetadataUpdates(updates: Map<String, Pair<Int, String?>>) {
+    private fun applyMetadataUpdates(updates: Map<String, FolderMetadata>) {
         if (updates.isEmpty()) return
         val currentItems = _uiState.value.fileItems.toMutableList()
         var modified = false
         currentItems.forEachIndexed { index, current ->
             val update = updates[current.file.absolutePath] ?: return@forEachIndexed
             currentItems[index] = current.copy(
-                imageCount = update.first,
-                firstImagePath = update.second
+                imageCount = update.imageCount,
+                firstImagePath = update.firstImagePath,
+                hasTransDb = update.hasTransDb
             )
             modified = true
         }

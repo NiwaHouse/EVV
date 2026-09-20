@@ -22,11 +22,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PlayArrow
@@ -58,10 +56,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.example.eev.core.model.FileItem
 import com.example.eev.core.model.SortOrder
 import com.example.eev.core.model.ThumbnailSize
@@ -440,34 +435,6 @@ private fun buildItemInfoText(item: FileItem): String {
  * 付加情報の日時表示フォーマット。
  */
 private val ITEM_INFO_DATE_FORMAT = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault())
-
-@Composable
-fun FileThumbnailIcon(item: FileItem, size: Int) {
-    if (item.isDirectory) {
-        if (item.firstImagePath != null) {
-            AsyncImage(
-                model = item.firstImagePath,
-                contentDescription = "サムネイル",
-                modifier = Modifier.size(size.dp).clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop
-            )
-        } else {
-            Icon(imageVector = Icons.Default.Folder, contentDescription = "フォルダ", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(size.dp))
-        }
-    } else {
-        val ext = item.file.extension.lowercase()
-        if (listOf("jpg", "jpeg", "png", "webp", "bmp", "gif").contains(ext)) {
-            AsyncImage(
-                model = item.file.absolutePath,
-                contentDescription = "画像",
-                modifier = Modifier.size(size.dp).clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop
-            )
-        } else {
-            Icon(imageVector = Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = "ファイル", tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(size.dp))
-        }
-    }
-}
 
 /**
  * スクロール位置を永続化するまでの待機時間（ミリ秒）。

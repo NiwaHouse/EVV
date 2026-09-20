@@ -53,20 +53,30 @@ class FileStorageManager {
     }
 
     /**
-     * 指定されたフォルダの「画像数」および「最初の画像パス」を非同期に取得する。
+     * 指定されたフォルダの「画像数」「最初の画像パス」「翻訳 DB の有無」を非同期に取得する。
+     *
+     * [責任]: フォルダ直下のメタ情報（画像数・先頭画像パス・trans_image 翻訳 DB 有無）の取得。
+     * [影響する状態]: なし（戻り値のみ。[ExplorerViewModel] が一覧へ反映する）。
+     * [潜在的エラー]: フォルダでない場合・読み取り失敗時は既定値（0 / null / false）を返す。
+     *
+     * 翻訳 DB の有無は表示設定（[showHiddenFiles]）に依存せず、常に直下 1 階層のみを判定する。
      */
     suspend fun getFolderMetadata(
         folder: File,
         showHiddenFiles: Boolean = false
-    ): Pair<Int, String?> = withContext(Dispatchers.IO) {
-        if (!folder.isDirectory) return@withContext Pair(0, null)
+    ): FolderMetadata = withContext(Dispatchers.IO) {
+        if (!folder.isDirectory) return@withContext FolderMetadata()
         val imageFiles = (folder.listFiles { f -> isImageFile(f) } ?: emptyArray()).filter { file ->
             if (!showHiddenFiles && (file.isHidden || file.name.startsWith("."))) {
                 false
             } else true
         }
         val firstPath = imageFiles.minByOrNull { it.name }?.absolutePath
-        Pair(imageFiles.size, firstPath)
+        FolderMetadata(
+            imageCount = imageFiles.size,
+            firstImagePath = firstPath,
+            hasTransDb = TransDbFile.existsIn(folder)
+        )
     }
 
     /**
