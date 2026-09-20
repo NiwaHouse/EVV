@@ -121,6 +121,9 @@ DataStore のファイル名は `eev_settings`。
 * フォルダ末尾到達時は既存の次フォルダ移動ロジックへ委譲して読み上げを継続する。手動で画像を移動した場合は移動先から継続する。
 * 先読み: `AudiblePrefetchCache` が次画像の OCR・翻訳結果を先行取得して保持する。
 * 表示: 翻訳テキストのオーバーレイは描画せず、`AudibleHighlightOverlay` が読み上げ中の検出領域を枠線でハイライトする。
+* trans_image 翻訳 DB 連携: 読み上げ台本の取得元は「対象フォルダ直下の `.trans_image.db`（`TransImageDbProvider`、読み取り専用）→ 取得不可なら端末内 OCR（`OcrEngine`／`TranslationEngine`）」の順に試行する。DB 読み取り結果は既存の `AudiblePrefetchCache` にのみ保持し、**`ViewerUiState` および DataStore に新しいフィールドは追加しない**（SSOT 維持）。
+* DB 由来の台本は文字座標を持たないため `AudibleUnit.boundingBox = null` となり、ハイライトは描画されない（描画側の仕様変更なし）。
+* DB 台本はページ単位のため、漫画モードでは `RIGHT_HALF` のみで全文を読み上げ、`LEFT_HALF` は空台本となって `audibleSilentWaitSeconds` の無音時待機を経て次画像へ進む。
 
 ### 2.3 翻訳オーバーレイ状態 (`TranslatedOverlayItem`)
 

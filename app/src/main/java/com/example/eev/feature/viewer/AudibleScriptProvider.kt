@@ -15,10 +15,13 @@ import java.io.File
 /**
  * オーディブル再生用の読み上げスクリプト（1 枚分の [AudibleUnit] 列）を生成するプロバイダ。
  *
- * [責任]: 表示中クロップ画像の OCR →（必要時のみ）翻訳 → 読み上げ順への並べ替え、および先読みキャッシュの適用。
+ * [責任]: 台本の取得元切替（trans_image の翻訳 DB 優先）、表示中クロップ画像の OCR →（必要時のみ）翻訳 →
+ *          読み上げ順への並べ替え、および先読みキャッシュの適用。
  * [影響する状態]: なし（永続化状態を変更しない。結果は [AudiblePrefetchCache] にのみ保持）。
  * [潜在的エラー]: 画像デコード失敗時は空リストを返し、呼び出し側で無音時待機へ遷移させる。
  *
+ * 台本の取得元は、対象フォルダ直下の `.trans_image.db`（[TransImageDbProvider]／読み取り専用）を優先し、
+ * DB が無い・読めない・対象行が無い場合のみオンデバイス OCR 経路へフォールバックする。
  * オーディブル再生中は翻訳オーバーレイを描画しないため、本プロバイダが唯一の OCR 実行経路となる。
  */
 class AudibleScriptProvider(
@@ -76,7 +79,7 @@ class AudibleScriptProvider(
     /**
      * OCR と（モードに応じた）翻訳を実行し、読み上げ順の [AudibleUnit] 列を生成する。
      *
-     * [責任]: 画像デコード、OCR、結合単位マージ、翻訳、読み上げ順ソート。
+     * [責任]: trans_image 翻訳 DB の優先適用、画像デコード、OCR、結合単位マージ、翻訳、読み上げ順ソート。
      * [影響する状態]: [TranslationEngine] 内部の翻訳モデル。
      * [潜在的エラー]: デコード失敗時は空リスト。翻訳失敗時は原文へフォールバックする（エンジン側の仕様）。
      */
@@ -87,6 +90,10 @@ class AudibleScriptProvider(
         sourceLanguage: Language,
         targetLanguage: Language
     ): List<AudibleUnit> = withContext(Dispatchers.IO) {
+        // trans_image が生成した翻訳 DB が利用できる場合は、そのテキストを読み上げ台本として優先使用する。
+        TransImageDbProvider.provide(file, cropPosition, mode, targetLanguage)
+            ?.let { return@withContext it }
+
         val bitmap = loadCroppedBitmap(file, cropPosition) ?: return@withContext emptyList()
 
         val rawOcrResults = ocrEngine.recognizeText(bitmap)
