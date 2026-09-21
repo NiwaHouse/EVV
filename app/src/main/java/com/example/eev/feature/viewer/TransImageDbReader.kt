@@ -16,13 +16,15 @@ internal const val TAG_TRANS_DB = "EEV_TRANS_DB"
  * trans_image（OCR＋翻訳サーバ）が生成する `.trans_image.db` からの本文読み出しを担当する。
  *
  * [責任]: 読み取り専用オープン、`meta.schema_version` の検証、有効行（`error = ''`）の抽出、
- *          モード別の採用列選択、読み取り失敗・該当行なしの理由ログ出力。
+ *          モード別の採用列選択、ルビ（`ruby_*` を正・本文 HTML をフォールバック）からの
+ *          読み上げテキスト復元、読み取り失敗・該当行なしの理由ログ出力。
  * [影響する状態]: なし（読み取り専用。DB への書き込みは一切行わない）。
  * [潜在的エラー]: オープン失敗・スキーマ版不一致・`SQLiteException`（列欠落・旧スキーマ等）・
  *                  該当行なしの場合は `null` を返す（呼び出し側がオンデバイス OCR 経路へ委譲する）。
  *
  * DB 仕様は `../lib/trans/DB仕様書.md`（スキーマ版 [SUPPORTED_SCHEMA_VERSION]）に準拠する。
- * 1 画像 = 1 行であり文字座標を持たない。
+ * 1 画像 = 1 行であり文字座標を持たない。段階15 以降、本文列（`source_text` / `translated_text`）は
+ * ルビ入り HTML であり、素テキストは `ruby_*`（JSON）を正として復元する（§3.1・§8）。
  */
 object TransImageDbReader {
 
@@ -31,7 +33,8 @@ object TransImageDbReader {
 
     /** `entries` から取得する列（SELECT 順に依存するため変更時はインデックスも更新すること）。 */
     private const val SELECT_COLUMNS =
-        "image_name, dst_lang, source_text, translated_text, polished_text"
+        "image_name, dst_lang, source_text, translated_text, polished_text, " +
+            "ruby_source, ruby_translated"
 
     /** `SELECT_COLUMNS` 内の `dst_lang` インデックス。 */
     private const val COLUMN_DST_LANG = 1
@@ -44,6 +47,12 @@ object TransImageDbReader {
 
     /** `SELECT_COLUMNS` 内の `polished_text` インデックス。 */
     private const val COLUMN_POLISHED_TEXT = 4
+
+    /** `SELECT_COLUMNS` 内の `ruby_source` インデックス（原文ルビ JSON。段階15・§8）。 */
+    private const val COLUMN_RUBY_SOURCE = 5
+
+    /** `SELECT_COLUMNS` 内の `ruby_translated` インデックス（訳文ルビ JSON。段階15・§8）。 */
+    private const val COLUMN_RUBY_TRANSLATED = 6
 
     /** フォールバック理由ログに列挙する `dst_lang` の最大件数（ログ肥大化の抑止）。 */
     private const val LOG_ROW_SUMMARY_LIMIT = 3
@@ -136,7 +145,9 @@ object TransImageDbReader {
                     mode = mode,
                     sourceText = cursor.getString(COLUMN_SOURCE_TEXT).orEmpty(),
                     translatedText = cursor.getString(COLUMN_TRANSLATED_TEXT).orEmpty(),
-                    polishedText = cursor.getString(COLUMN_POLISHED_TEXT).orEmpty()
+                    polishedText = cursor.getString(COLUMN_POLISHED_TEXT).orEmpty(),
+                    rubySource = cursor.getString(COLUMN_RUBY_SOURCE).orEmpty(),
+                    rubyTranslated = cursor.getString(COLUMN_RUBY_TRANSLATED).orEmpty()
                 )
                 if (spoken == null) {
                     // 例: READ_TRANSLATED なのに translated_text が空（未翻訳）など、本文を採用できない行。
@@ -168,7 +179,8 @@ object TransImageDbReader {
     /**
      * モードに応じて実際に読み上げる本文を選択する。
      *
-     * [責任]: `READ_RAW` は整形済み原文を優先し、`READ_TRANSLATED` は訳文を採用する。
+     * [責任]: `READ_RAW` は整形済み原文（プレーンなテキスト）を最優先し、空なら原文のルビから復元する。
+     *          `READ_TRANSLATED` は訳文のルビから復元する。ルビの復元は [RubyTextRestorer] に委譲する。
      * [影響する状態]: なし。
      * [潜在的エラー]: 採用できる本文が無い場合は `null`（無効行として扱う）。
      */
@@ -176,10 +188,15 @@ object TransImageDbReader {
         mode: AudibleMode,
         sourceText: String,
         translatedText: String,
-        polishedText: String
+        polishedText: String,
+        rubySource: String,
+        rubyTranslated: String
     ): String? = when (mode) {
         AudibleMode.OFF -> null
-        AudibleMode.READ_RAW -> polishedText.ifBlank { sourceText }.takeIf { it.isNotBlank() }
-        AudibleMode.READ_TRANSLATED -> translatedText.takeIf { it.isNotBlank() }
-    }
+        AudibleMode.READ_RAW -> polishedText.ifBlank {
+            RubyTextRestorer.toSpokenText(rubySource, sourceText)
+        }
+        AudibleMode.READ_TRANSLATED ->
+            RubyTextRestorer.toSpokenText(rubyTranslated, translatedText)
+    }?.takeIf { it.isNotBlank() }
 }
