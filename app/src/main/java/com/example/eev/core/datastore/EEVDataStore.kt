@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.eev.core.model.AudibleMode
 import com.example.eev.core.model.Language
@@ -32,6 +33,9 @@ class EEVDataStore(private val context: Context) {
         private val KEY_SOURCE_LANG = stringPreferencesKey("source_language")
         private val KEY_TARGET_LANG = stringPreferencesKey("target_language")
         private val KEY_SORT_ORDER = stringPreferencesKey("sort_order")
+        private val KEY_FOLDER_SORT_ORDER = stringPreferencesKey("folder_sort_order")
+        private val KEY_FILE_SORT_ORDER = stringPreferencesKey("file_sort_order")
+        private val KEY_FAVORITE_FOLDERS = stringSetPreferencesKey("favorite_folders")
         private val KEY_VIEW_MODE = stringPreferencesKey("view_mode")
         private val KEY_SHOW_HIDDEN_FILES = booleanPreferencesKey("show_hidden_files")
         private val KEY_TEXT_COLOR = stringPreferencesKey("text_color_hex")
@@ -81,6 +85,23 @@ class EEVDataStore(private val context: Context) {
 
     val sortOrder: Flow<SortOrder> = context.dataStore.data.map { prefs ->
         SortOrder.fromName(prefs[KEY_SORT_ORDER] ?: SortOrder.NAME_ASC.name)
+    }
+
+    /** フォルダ用の個別ソート順（未設定時は全体の sort_order にフォールバック）。 */
+    val folderSortOrder: Flow<SortOrder> = context.dataStore.data.map { prefs ->
+        val raw = prefs[KEY_FOLDER_SORT_ORDER] ?: prefs[KEY_SORT_ORDER] ?: SortOrder.NAME_ASC.name
+        SortOrder.fromName(raw)
+    }
+
+    /** ファイル用の個別ソート順（未設定時は全体の sort_order にフォールバック）。 */
+    val fileSortOrder: Flow<SortOrder> = context.dataStore.data.map { prefs ->
+        val raw = prefs[KEY_FILE_SORT_ORDER] ?: prefs[KEY_SORT_ORDER] ?: SortOrder.NAME_ASC.name
+        SortOrder.fromName(raw)
+    }
+
+    /** お気に入りフォルダの絶対パスセット。 */
+    val favoriteFolders: Flow<Set<String>> = context.dataStore.data.map { prefs ->
+        prefs[KEY_FAVORITE_FOLDERS] ?: emptySet()
     }
 
     val viewMode: Flow<com.example.eev.core.model.ViewMode> = context.dataStore.data.map { prefs ->
@@ -261,6 +282,75 @@ class EEVDataStore(private val context: Context) {
                 MIN_AUDIBLE_SPEECH_RATE,
                 MAX_AUDIBLE_SPEECH_RATE
             )
+        }
+    }
+
+    /**
+     * フォルダの個別ソート順を永続化する。
+     *
+     * [責任]: フォルダ並び順設定の更新。
+     * [影響する状態]: `folder_sort_order`。
+     * [潜在的エラー]: DataStore書き込み失敗時の例外。
+     */
+    suspend fun setFolderSortOrder(order: SortOrder) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FOLDER_SORT_ORDER] = order.name
+        }
+    }
+
+    /**
+     * ファイルの個別ソート順を永続化する。
+     *
+     * [責任]: ファイル並び順設定の更新。
+     * [影響する状態]: `file_sort_order`。
+     * [潜在的エラー]: DataStore書き込み失敗時の例外。
+     */
+    suspend fun setFileSortOrder(order: SortOrder) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FILE_SORT_ORDER] = order.name
+        }
+    }
+
+    /**
+     * お気に入りフォルダを追加する。
+     *
+     * [責任]: お気に入りフォルダパスの登録。
+     * [影響する状態]: `favorite_folders`。
+     * [潜在的エラー]: DataStore書き込み失敗時の例外。
+     */
+    suspend fun addFavoriteFolder(folderPath: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_FAVORITE_FOLDERS]?.toMutableSet() ?: mutableSetOf()
+            current.add(folderPath)
+            prefs[KEY_FAVORITE_FOLDERS] = current
+        }
+    }
+
+    /**
+     * お気に入りフォルダを解除する。
+     *
+     * [責任]: お気に入りフォルダパスの削除。
+     * [影響する状態]: `favorite_folders`。
+     * [潜在的エラー]: DataStore書き込み失敗時の例外。
+     */
+    suspend fun removeFavoriteFolder(folderPath: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[KEY_FAVORITE_FOLDERS]?.toMutableSet() ?: mutableSetOf()
+            current.remove(folderPath)
+            prefs[KEY_FAVORITE_FOLDERS] = current
+        }
+    }
+
+    /**
+     * お気に入りフォルダ一覧を一括設定・クリーンアップする。
+     *
+     * [責任]: 存在しないフォルダの除外等による一括更新。
+     * [影響する状態]: `favorite_folders`。
+     * [潜在的エラー]: DataStore書き込み失敗時の例外。
+     */
+    suspend fun setFavoriteFolders(folders: Set<String>) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FAVORITE_FOLDERS] = folders
         }
     }
 

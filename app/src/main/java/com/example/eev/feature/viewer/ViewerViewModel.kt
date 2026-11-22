@@ -27,6 +27,9 @@ import java.io.File
  */
 data class ViewerUiState(
     val imageFiles: List<File> = emptyList(),
+    val isCurrentFolderFavorite: Boolean = false,
+    /** 本棚画面から起動されたかどうか（true の場合、フォルダまたぎ移動はお気に入りフォルダ内を循環移動する）。 */
+    val isFromBookshelf: Boolean = false,
     val currentIndex: Int = 0,
     val cropPosition: CropPosition = CropPosition.FULL,
     val isMangaMode: Boolean = false,
@@ -90,6 +93,26 @@ class ViewerViewModel(
 
     private val _uiState = MutableStateFlow(ViewerUiState())
     val uiState: StateFlow<ViewerUiState> = _uiState.asStateFlow()
+
+    /**
+     * フォルダまたぎ移動（通常時は親フォルダ直下、本棚起動時はお気に入りフォルダ内ループ）の探索ナビゲータ。
+     */
+    private val directoryNavigator = ViewerDirectoryNavigator(storageManager)
+
+    /**
+     * DataStore から購読したお気に入りフォルダの絶対パスセット。
+     */
+    private var favoriteFolderPaths: Set<String> = emptySet()
+
+    /**
+     * 本棚専用DB（`bookshelf.db`）から引き継いだお気に入りフォルダのカスタム並び順マップ。
+     */
+    private var bookshelfCustomOrderMap: Map<String, Int> = emptyMap()
+
+    /**
+     * 本棚起動時に現在選択中のカテゴリ絞り込み対象お気に入りフォルダ集合。
+     */
+    private var bookshelfTargetFolderPaths: Set<String> = emptySet()
 
     /**
      * オーディブル再生（OCR→翻訳→TTS→自動送り）の状態機械。
@@ -191,19 +214,40 @@ class ViewerViewModel(
                 _uiState.value = _uiState.value.copy(audibleSpeechRate = rate)
             }
         }
+        viewModelScope.launch {
+            dataStore.favoriteFolders.collectLatest { favorites ->
+                favoriteFolderPaths = favorites
+                val currentFolder = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex)?.parentFile
+                val isFav = currentFolder != null && favorites.contains(currentFolder.absolutePath)
+                _uiState.value = _uiState.value.copy(isCurrentFolderFavorite = isFav)
+            }
+        }
     }
 
     /**
      * 指定ディレクトリの画像一覧を [sortOrder] で読み込み、[initialFile] を起点にビューワを初期化する。
      *
-     * [責任]: ビューワ表示用の画像一覧取得と起点インデックス決定。
-     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, viewerSortOrder, anchorFilePath。
+     * [責任]: ビューワ表示用の画像一覧取得と起点インデックスおよび起動経路（[isFromBookshelf]）の決定。
+     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, viewerSortOrder, anchorFilePath, isFromBookshelf, isCurrentFolderFavorite。
      * [潜在的エラー]: ディレクトリ非存在時は空リストとなり currentIndex は 0 にフォールバックする。
      *
      * ソート順の唯一の真実源は本メソッドの引数 [sortOrder] である。
      * DataStore の viewerSortOrder は永続化のための保存先であり、読み込み時の決定には使用しない。
      */
-    fun loadImagesFromDirectory(directory: File, initialFile: File, sortOrder: SortOrder) {
+    fun loadImagesFromDirectory(
+        directory: File,
+        initialFile: File,
+        sortOrder: SortOrder,
+        isFromBookshelf: Boolean = false,
+        bookshelfCustomOrders: Map<String, Int> = emptyMap(),
+        bookshelfTargetPaths: Set<String> = emptySet()
+    ) {
+        if (isFromBookshelf) {
+            bookshelfCustomOrderMap = bookshelfCustomOrders
+            bookshelfTargetFolderPaths = bookshelfTargetPaths
+        } else {
+            bookshelfTargetFolderPaths = emptySet()
+        }
         viewModelScope.launch {
             val images = storageManager.getImageFiles(
                 directory = directory,
@@ -215,7 +259,9 @@ class ViewerViewModel(
                 imageFiles = images,
                 currentIndex = index,
                 viewerSortOrder = sortOrder,
-                anchorFilePath = initialFile.absolutePath
+                anchorFilePath = initialFile.absolutePath,
+                isFromBookshelf = isFromBookshelf,
+                isCurrentFolderFavorite = favoriteFolderPaths.contains(directory.absolutePath)
             )
             afterImageChanged()
         }
@@ -224,6 +270,25 @@ class ViewerViewModel(
     fun updateViewerSortOrder(sortOrder: SortOrder) {
         viewModelScope.launch {
             dataStore.setViewerSortOrder(sortOrder)
+        }
+    }
+
+    /**
+     * 現在閲覧中のフォルダをお気に入り登録/解除トグルする。
+     *
+     * [責任]: 表示中画像が属する親フォルダのお気に入り状態変更。
+     * [影響する状態]: [ViewerUiState.isCurrentFolderFavorite]、DataStore の `favorite_folders`。
+     * [潜在的エラー]: 画像が存在しない場合は何もしない。
+     */
+    fun toggleFavoriteCurrentFolder() {
+        val currentFolder = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex)?.parentFile ?: return
+        val path = currentFolder.absolutePath
+        viewModelScope.launch {
+            if (_uiState.value.isCurrentFolderFavorite) {
+                dataStore.removeFavoriteFolder(path)
+            } else {
+                dataStore.addFavoriteFolder(path)
+            }
         }
     }
 
@@ -237,7 +302,7 @@ class ViewerViewModel(
     fun navigateToNextDirectoryFromMenu(): Boolean {
         val currentFile = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex) ?: return false
         val currentDir = currentFile.parentFile ?: return false
-        if (currentDir.parentFile == null) return false
+        if (!_uiState.value.isFromBookshelf && currentDir.parentFile == null) return false
         viewModelScope.launch {
             if (navigateToNextDirectorySuspending()) afterImageChanged()
         }
@@ -358,6 +423,15 @@ class ViewerViewModel(
      * [潜在的エラー]: 画像一覧が空の場合は再生を開始しない。
      */
     private fun afterImageChanged() {
+        val currentFolder = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex)?.parentFile
+        viewModelScope.launch {
+            val favorites = dataStore.favoriteFolders
+            // 現在のフォルダがお気に入りに含まれているかを即座に検証
+            favorites.collectLatest { set ->
+                val isFav = currentFolder != null && set.contains(currentFolder.absolutePath)
+                _uiState.value = _uiState.value.copy(isCurrentFolderFavorite = isFav)
+            }
+        }
         if (_uiState.value.audibleMode != AudibleMode.OFF) {
             audibleController.start()
         } else if (_uiState.value.isTranslationEnabled) {
@@ -368,7 +442,7 @@ class ViewerViewModel(
     private fun navigateToNextDirectory(): Boolean {
         val currentFile = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex) ?: return false
         val currentDir = currentFile.parentFile ?: return false
-        if (currentDir.parentFile == null) return false
+        if (!_uiState.value.isFromBookshelf && currentDir.parentFile == null) return false
 
         viewModelScope.launch {
             if (navigateToNextDirectorySuspending()) afterImageChanged()
@@ -379,47 +453,41 @@ class ViewerViewModel(
     /**
      * 次の画像を含むフォルダへ移動する（完了を待機できる形）。
      *
+     * 本棚起動時（[ViewerUiState.isFromBookshelf] が true）はお気に入りフォルダ群を
+     * [ViewerUiState.viewerSortOrder] 順で循環（ループ）移動し、通常起動時は親フォルダ直下を移動する。
+     *
      * [責任]: フォルダまたぎ移動の実行本体。再生ループからも呼べるよう待機可能にしている。
-     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, anchorFilePath, cropPosition。
-     * [潜在的エラー]: 後続に画像を含むフォルダが無い場合は false を返し何も変更しない。
+     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, anchorFilePath, cropPosition, isCurrentFolderFavorite。
+     * [潜在的エラー]: 移動可能な画像を含むフォルダが無い場合は false を返し何も変更しない。
      */
     private suspend fun navigateToNextDirectorySuspending(): Boolean {
-        val currentFile = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex) ?: return false
+        val state = _uiState.value
+        val currentFile = state.imageFiles.getOrNull(state.currentIndex) ?: return false
         val currentDir = currentFile.parentFile ?: return false
-        val parentDir = currentDir.parentFile ?: return false
 
-        val subDirs = storageManager.getSubDirectories(
-            directory = parentDir,
-            sortOrder = _uiState.value.viewerSortOrder,
-            showHiddenFiles = _uiState.value.showHiddenFiles
+        val result = directoryNavigator.findNextDirectory(
+            currentDir = currentDir,
+            sortOrder = state.viewerSortOrder,
+            showHiddenFiles = state.showHiddenFiles,
+            isFromBookshelf = state.isFromBookshelf,
+            favoritePaths = bookshelfTargetFolderPaths.ifEmpty { favoriteFolderPaths },
+            customOrderMap = bookshelfCustomOrderMap
+        ) ?: return false
+
+        _uiState.value = _uiState.value.copy(
+            imageFiles = result.images,
+            currentIndex = 0,
+            anchorFilePath = result.images.first().absolutePath,
+            cropPosition = if (_uiState.value.isMangaMode) CropPosition.RIGHT_HALF else CropPosition.FULL,
+            isCurrentFolderFavorite = favoriteFolderPaths.contains(result.directory.absolutePath)
         )
-        val currentIndex = subDirs.indexOfFirst { it.absolutePath == currentDir.absolutePath }
-        if (currentIndex in 0 until subDirs.size - 1) {
-            for (i in (currentIndex + 1) until subDirs.size) {
-                val nextDir = subDirs[i]
-                val images = storageManager.getImageFiles(
-                    directory = nextDir,
-                    sortOrder = _uiState.value.viewerSortOrder,
-                    showHiddenFiles = _uiState.value.showHiddenFiles
-                )
-                if (images.isNotEmpty()) {
-                    _uiState.value = _uiState.value.copy(
-                        imageFiles = images,
-                        currentIndex = 0,
-                        anchorFilePath = images.first().absolutePath,
-                        cropPosition = if (_uiState.value.isMangaMode) CropPosition.RIGHT_HALF else CropPosition.FULL
-                    )
-                    return true
-                }
-            }
-        }
-        return false
+        return true
     }
 
     private fun navigateToPreviousDirectory(): Boolean {
         val currentFile = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex) ?: return false
         val currentDir = currentFile.parentFile ?: return false
-        if (currentDir.parentFile == null) return false
+        if (!_uiState.value.isFromBookshelf && currentDir.parentFile == null) return false
 
         viewModelScope.launch {
             val moved = navigateToPreviousDirectorySuspending()
@@ -431,41 +499,35 @@ class ViewerViewModel(
     /**
      * 前の画像を含むフォルダへ移動する（完了を待機できる形）。
      *
+     * 本棚起動時（[ViewerUiState.isFromBookshelf] が true）はお気に入りフォルダ群を
+     * [ViewerUiState.viewerSortOrder] の逆順で循環（ループ）移動し、通常起動時は親フォルダ直下を移動する。
+     *
      * [責任]: 逆方向のフォルダまたぎ移動の実行本体。
-     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, anchorFilePath, cropPosition。
-     * [潜在的エラー]: 先行に画像を含むフォルダが無い場合は false を返し何も変更しない。
+     * [影響する状態]: ViewerUiState.imageFiles, currentIndex, anchorFilePath, cropPosition, isCurrentFolderFavorite。
+     * [潜在的エラー]: 移動可能な画像を含むフォルダが無い場合は false を返し何も変更しない。
      */
     private suspend fun navigateToPreviousDirectorySuspending(): Boolean {
-        val currentFile = _uiState.value.imageFiles.getOrNull(_uiState.value.currentIndex) ?: return false
+        val state = _uiState.value
+        val currentFile = state.imageFiles.getOrNull(state.currentIndex) ?: return false
         val currentDir = currentFile.parentFile ?: return false
-        val parentDir = currentDir.parentFile ?: return false
 
-        val subDirs = storageManager.getSubDirectories(
-            directory = parentDir,
-            sortOrder = _uiState.value.viewerSortOrder,
-            showHiddenFiles = _uiState.value.showHiddenFiles
+        val result = directoryNavigator.findPreviousDirectory(
+            currentDir = currentDir,
+            sortOrder = state.viewerSortOrder,
+            showHiddenFiles = state.showHiddenFiles,
+            isFromBookshelf = state.isFromBookshelf,
+            favoritePaths = bookshelfTargetFolderPaths.ifEmpty { favoriteFolderPaths },
+            customOrderMap = bookshelfCustomOrderMap
+        ) ?: return false
+
+        _uiState.value = _uiState.value.copy(
+            imageFiles = result.images,
+            currentIndex = result.images.size - 1,
+            anchorFilePath = result.images.last().absolutePath,
+            cropPosition = if (_uiState.value.isMangaMode) CropPosition.LEFT_HALF else CropPosition.FULL,
+            isCurrentFolderFavorite = favoriteFolderPaths.contains(result.directory.absolutePath)
         )
-        val currentIndex = subDirs.indexOfFirst { it.absolutePath == currentDir.absolutePath }
-        if (currentIndex > 0) {
-            for (i in (currentIndex - 1) downTo 0) {
-                val prevDir = subDirs[i]
-                val images = storageManager.getImageFiles(
-                    directory = prevDir,
-                    sortOrder = _uiState.value.viewerSortOrder,
-                    showHiddenFiles = _uiState.value.showHiddenFiles
-                )
-                if (images.isNotEmpty()) {
-                    _uiState.value = _uiState.value.copy(
-                        imageFiles = images,
-                        currentIndex = images.size - 1,
-                        anchorFilePath = images.last().absolutePath,
-                        cropPosition = if (_uiState.value.isMangaMode) CropPosition.LEFT_HALF else CropPosition.FULL
-                    )
-                    return true
-                }
-            }
-        }
-        return false
+        return true
     }
 
     // ------------------------------------------------------------------

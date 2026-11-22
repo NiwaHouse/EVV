@@ -2,7 +2,8 @@
 
 | 機能モジュール | 対象ファイルパス | 主な役割 | 依存コンポーネント |
 | :--- | :--- | :--- | :--- |
-| **Main Activity** | `app/src/main/java/com/example/eev/MainActivity.kt` | エントリポイント、パーミッション管理、画面ルーティング | ViewModels, Compose UI |
+| **Main Activity** | `app/src/main/java/com/example/eev/MainActivity.kt` | エントリポイント、パーミッション管理、画面ルーティング、ビューワ終了時の起動元画面復帰 | ViewModels, Compose UI, AppBackHandler |
+| **Core UI** | `app/src/main/java/com/example/eev/core/ui/AppBackHandler.kt` | 端末の戻るボタン（システムバック操作）の画面別ルーティング制御（エクスプローラ履歴復帰・ビューワ起動元復帰・本棚/設定からの復帰）および例外保護 | BackHandler, Screen |
 | **Core Models** | `app/src/main/java/com/example/eev/core/model/*` | ドメインデータモデル (FileItem, SortOrder, Language, ViewMode, ThumbnailSize, AudibleMode) | なし |
 | **Core Storage** | `app/src/main/java/com/example/eev/core/storage/FileStorageManager.kt` | ストレージ・MediaStoreからのファイル一覧およびフォルダメタ情報（画像数・先頭画像パス・翻訳 DB 有無）の一括取得 | Android SAF / MediaStore, FolderMetadata, TransDbFile |
 | **Core Storage** | `app/src/main/java/com/example/eev/core/storage/FolderMetadata.kt` | フォルダ直下メタ情報のデータモデル（画像数・先頭画像パス・翻訳 DB 有無）。`Pair` の位置取り違え防止のため導入 | なし |
@@ -15,13 +16,14 @@
 | **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/ViewerScreen.kt` | フルスクリーン表示、タップ/長押し/トリプルタップジェスチャ処理、オーディブル再生バッジ・読み上げ中ハイライト表示 | ViewerViewModel, ViewerTripleTapDialog, AudibleHighlightOverlay |
 | **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/ViewerTripleTapDialog.kt` | トリプルタップ時の操作選択モーダル（終了/次フォルダ/先頭画像） | なし |
 | **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/MangaCropHelper.kt` | 漫画モード（見開き右→左）のビットマップ分割・クロップ処理 | Android Graphics Bitmap |
-| **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/ViewerViewModel.kt` | 画像連続再生、漫画モード状態制御、翻訳トリガー、ビューワ独自ソート順の真実源管理（`loadImagesFromDirectory` 引数・フォルダまたぎ移動基準）、オーディブル再生の公開API（モード/待機秒数/速度変更、再生トグル、DL確認、ライフサイクル連動）と `AudibleSessionController` への委譲 | EEVDataStore, StorageManager, OcrEngine, TranslationEngine, TtsEngine, AudibleSessionController |
+| **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/ViewerViewModel.kt` | 画像連続再生、漫画モード状態制御、翻訳トリガー、ビューワ独自ソート順の真実源管理（`loadImagesFromDirectory` 引数・フォルダまたぎ移動基準）、起動経路（通常／本棚）に応じた `ViewerDirectoryNavigator` へのフォルダ移動委譲、オーディブル再生の公開API（モード/待機秒数/速度変更、再生トグル、DL確認、ライフサイクル連動）と `AudibleSessionController` への委譲 | EEVDataStore, StorageManager, ViewerDirectoryNavigator, OcrEngine, TranslationEngine, TtsEngine, AudibleSessionController |
+| **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/ViewerDirectoryNavigator.kt` | 画像ビューワの「次のフォルダ／前のフォルダ」探索ナビゲータ。通常起動時は親ディレクトリ直下のサブフォルダを非ループ走査し、本棚起動時はお気に入り登録フォルダ群を `viewerSortOrder` でソートして循環（ループ）走査する | FileStorageManager, FileItem, SortOrder |
 | **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/ViewerBottomSheet.kt` | 画像ビューワ下端ボトムシート設定UI（ビューワ独自ソート選択、オーディブル2トグル・無音時待機秒数/読み上げ速度スライダー） | ViewerViewModel |
 | **Feature Translation** | `app/src/main/java/com/example/eev/feature/translation/OcrEngine.kt` | ML Kitによる画像内テキストおよび領域矩形(BoundingBox)検出 | Google ML Kit Text Recognition |
 | **Feature Translation** | `app/src/main/java/com/example/eev/feature/translation/TranslationEngine.kt` | ML Kitによるオンデバイス言語翻訳の実行 | Google ML Kit On-Device Translation |
 | **Feature Translation** | `app/src/main/java/com/example/eev/feature/translation/TranslationOverlay.kt` | 検出座標に合わせた翻訳テキストのComposeオーバーレイ描画 | Jetpack Compose Graphics |
 | **Feature Thumbnail**| `app/src/main/java/com/example/eev/feature/thumbnail/ThumbnailGenerator.kt` | フォルダ先頭画像の特定・Coil用パス提供 | FileStorageManager |
-| **Feature Thumbnail**| `app/src/main/java/com/example/eev/feature/thumbnail/FolderThumbnailCache.kt` | フォルダサムネイルの軽量画像生成・cacheDir保存・LRU容量管理 | Android Graphics Bitmap, cacheDir |
+| **Feature Thumbnail**| `app/src/main/java/com/example/eev/feature/thumbnail/FolderThumbnailCache.kt` | フォルダサムネイルの軽量画像生成・cacheDir保存・スレッドセーフなLRU容量管理（更新日時スナップショットソート） | Android Graphics Bitmap, cacheDir |
 | **Plugin Core**     | `app/src/main/java/com/example/eev/plugin/EEVPlugin.kt` | プラグイン拡張用の基本インターフェース定義 | Core Models |
 | **Plugin Registry** | `app/src/main/java/com/example/eev/plugin/PluginRegistry.kt` | プラグイン登録および一括初期化管理 | EEVPlugin |
 | **Settings**        | `app/src/main/java/com/example/eev/settings/SettingsScreen.kt` | 全体設定画面UI（漫画モード、翻訳設定、言語） | SettingsViewModel |
@@ -35,4 +37,21 @@
 | **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/RubyTextRestorer.kt` | ルビ付き本文（段階15）の素テキスト復元（2 段方式）。ルビ JSON（`ruby_source` / `ruby_translated`）を正として語順どおり読み（`reading`）を連結し、空（未計算）／`[]`／解釈不可の場合のみ `HtmlTextRestorer` へ委譲する。読みの採用可否（簡略モードの `REPLACE` は語 `base` へフォールバック）と、`HtmlTextRestorer` によるルビ要素置換・タグ除去・HTML 実体参照（名前付き＋数値）の復号を担う | Android SDK (`org.json.JSONArray`) |
 | **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/AudibleScriptSplitter.kt` | DB 本文文字列の読み上げ台本化。記号・句読点のみの行を破棄し、「文末記号（`。！？!?…」』`）で終わらない行」または「12 文字未満の行」を直前の行へ連結して文単位に近づけ、4000 文字超の段落は句点で再分割して `AudibleUnit` 列（`boundingBox = null`）を生成する。結合前後の行数を `SplitResult` で返し切り分けログに反映する | AudibleUnit |
 | **Feature Viewer**  | `app/src/main/java/com/example/eev/feature/viewer/AudibleSessionController.kt` | オーディブル再生状態機械の本体。セッションIDによる世代管理、字幕1件ずつの TTS 投入と読み上げ完了待ち、無音時待機、次項目/次画像/次フォルダへの自動送り、先読み起動、バックグラウンド移行時の停止と復帰を司る。UI状態は `stateProvider`/`stateUpdater` 経由で `ViewerViewModel` の `MutableStateFlow` を唯一の真実源として更新する | AudibleScriptProvider, TtsEngine, TranslationEngine, ViewerUiState |
+| **Core Models** | `app/src/main/java/com/example/eev/core/model/FavoriteFolder.kt` | 本棚表示用のフォルダメタ情報モデル（パス、名前、更新日時、画像数、先頭画像パス、翻訳DB有無、所属カテゴリ一覧）および `FileItem` 変換 | FileItem, BookshelfCategory |
+| **Core Models** | `app/src/main/java/com/example/eev/core/model/BookshelfCategory.kt` | 本棚カテゴリのデータモデル（カテゴリID、カテゴリ名） | なし |
+| **Feature Explorer**| `app/src/main/java/com/example/eev/feature/explorer/ItemContextMenuDialog.kt` | ファイル・フォルダ長押し時の操作メニュー（お気に入り追加/解除、削除） | FileItem |
+| **Feature Explorer**| `app/src/main/java/com/example/eev/feature/explorer/DeleteConfirmDialog.kt` | ファイル・フォルダ削除時の最終確認ダイアログ | FileItem |
+| **Feature Explorer**| `app/src/main/java/com/example/eev/feature/explorer/ExplorerUiState.kt` | エクスプローラ画面UI状態モデル | FileItem, SortOrder, ThumbnailSize, ViewMode |
+| **Feature Explorer**| `app/src/main/java/com/example/eev/feature/explorer/ExplorerMetadataLoader.kt` | フォルダメタデータ（画像数、サムネイル、翻訳DB）の非同期バッチローダー | FileStorageManager, FolderThumbnailCache |
+| **Feature Explorer**| `app/src/main/java/com/example/eev/feature/explorer/BreadcrumbBar.kt` | エクスプローラのパンくずリストナビゲーションUIバー | なし |
+| **Feature Explorer**| `app/src/main/java/com/example/eev/feature/explorer/ExplorerItemViews.kt` | ファイル一覧のリスト行およびグリッドセル表示UIコンポーネント（エクスプローラおよび本棚画面で共通利用） | FileItem, ThumbnailSize |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfUiState.kt` | 本棚画面UI状態モデル（お気に入り一覧、カテゴリ一覧、選択中カテゴリID、ソート順、表示モード、サムネイルサイズ、情報表示、検索状態） | FavoriteFolder, BookshelfCategory, SortOrder, ViewMode, ThumbnailSize |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfDatabase.kt` | 本棚専用 SQLite DB（`bookshelf.db` v2）のテーブル生成およびカスタム並び順・フォルダメタデータ・専用サムネイルパスの永続化管理 | Android SQLite (`SQLiteOpenHelper`), FavoriteFolder |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfCategoryDao.kt` | `BookshelfDatabase` 上のカテゴリ登録・名前変更・削除およびフォルダ・カテゴリ多対多紐付けCRUD操作 | BookshelfDatabase, BookshelfCategory, FavoriteFolder |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfThumbnailStore.kt` | 本棚専用の永続サムネイル画像（`filesDir/bookshelf_thumbs`）の生成・保持・削除管理 | Android Graphics Bitmap |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfReorderList.kt` | リスト表示（ドラッグハンドル）およびグリッド表示（長押しドラッグ）でのドラッグ＆ドロップ並び替えUIコンポーネント | FavoriteFolder, BookshelfItemCard |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfCategoryDialogs.kt` | 本棚ヘッダーのカテゴリ絞り込みチップバー、カテゴリ管理ダイアログ（追加・編集・削除）、およびフォルダ長押し時の複数カテゴリ選択＋お気に入り解除統合ダイアログ | BookshelfCategory, FavoriteFolder |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfScreen.kt` | 本棚画面UI、カテゴリ絞り込みバー、検索バー、リスト/グリッド表示切替、ソート・表示オプション・カテゴリ管理・フォルダ別カテゴリ選択ダイアログ、設定画面遷移、ドラッグ＆ドロップ並び替え、ビューワ直接起動 | BookshelfViewModel, BookshelfReorderList, BookshelfCategoryDialogs, SortOptionDialog, DisplayOptionDialog |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfViewModel.kt` | 2段階ロード（`bookshelf.db` 即時表示＋バックグラウンド差分同期）、カテゴリCRUD・フォルダへの複数カテゴリ割り当て、カテゴリ＆検索フィルタ管理、カスタム並び順（昇順・降順）更新・DB保存、StateFlow配信 | EEVDataStore, FileStorageManager, BookshelfDatabase, BookshelfThumbnailStore |
+| **Feature Bookshelf**| `app/src/main/java/com/example/eev/feature/bookshelf/BookshelfItemCard.kt` | 本棚フォルダのリスト行（ドラッグハンドル・カテゴリバッジ・解除ボタン付き）およびグリッドカード（カテゴリバッジ・解除ボタン・翻訳DBバッジ付き）描画コンポーネント | FavoriteFolder, ExplorerThumbnailIcon |
 | **Global Skill**    | `skills/gradle-japanese-path-build.md` | 日本語（マルチバイト）パス環境での Gradle ビルド失敗を回避する汎用手順（ASCII パスへコピー + Wrapper jar 直接起動） | Gradle Wrapper, Java |

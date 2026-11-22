@@ -14,7 +14,10 @@ DataStore のファイル名は `eev_settings`。
 | `is_translation_enabled` | `Boolean` | `false` | 画像内翻訳機能のON/OFF。 |
 | `source_language` | `String` | `"ja"` | 翻訳元言語コード。`Language` enum の `code` 値（`"ja"`, `"en"`, `"zh"`, `"ko"`, `"es"`, `"fr"`, `"de"`）。 |
 | `target_language` | `String` | `"en"` | 翻訳先言語コード。`Language` enum の `code` 値（`"ja"`, `"en"`, `"zh"`, `"ko"`, `"es"`, `"fr"`, `"de"`）。 |
-| `sort_order` | `String` | `"NAME_ASC"` | エクスプローラのソート順。`SortOrder` enum の `name` 値（`NAME_ASC`, `NAME_DESC`, `DATE_DESC`, `DATE_ASC`, `IMAGE_COUNT_DESC`, `IMAGE_COUNT_ASC`）。 |
+| `folder_sort_order` | `String` | `"NAME_ASC"` | エクスプローラのフォルダ並び順。`SortOrder` enum の `name` 値。 |
+| `file_sort_order` | `String` | `"NAME_ASC"` | エクスプローラのファイル並び順。`SortOrder` enum の `name` 値。画像ビューワ起動時のデフォルトソート順の基準にもなる。 |
+| `sort_order` | `String` | `"NAME_ASC"` | （旧互換用）エクスプローラのソート順。 |
+| `favorite_folders` | `Set<String>` | `emptySet()` | お気に入り登録されたフォルダの絶対パスセット。本棚画面で表示するフォルダのマスターデータ。 |
 | `view_mode` | `String` | `"LIST"` | エクスプローラの表示モード。`ViewMode` enum の `name` 値（`LIST`, `GRID`）。 |
 | `show_hidden_files` | `Boolean` | `false` | 隠しファイル（ドットファイル）を一覧に表示するか。エクスプローラおよびビューワの一覧取得に影響。 |
 | `text_color_hex` | `String` | `"#FFFFFF"` | 翻訳オーバーレイのテキスト色（16進カラーコード）。 |
@@ -46,7 +49,8 @@ DataStore のファイル名は `eev_settings`。
 | :--- | :--- | :--- | :--- |
 | `currentDirectory` | `File` | `Environment.getExternalStorageDirectory()` | 現在表示中のフォルダパス。 |
 | `fileItems` | `List<FileItem>` | `emptyList()` | ソート済みのファイル・フォルダ一覧。 |
-| `sortOrder` | `SortOrder` | `SortOrder.NAME_ASC` | 現在適用中のソート順。 |
+| `folderSortOrder` | `SortOrder` | `SortOrder.NAME_ASC` | フォルダに適用中のソート順。 |
+| `fileSortOrder` | `SortOrder` | `SortOrder.NAME_ASC` | ファイルに適用中のソート順。 |
 | `viewMode` | `ViewMode` | `ViewMode.LIST` | 現在の表示モード（リスト / グリッド）。 |
 | `showHiddenFiles` | `Boolean` | `false` | 隠しファイルを表示するか。 |
 | `thumbnailSize` | `ThumbnailSize` | `ThumbnailSize.MEDIUM` | サムネイル表示サイズ（大・中・小）。グリッド列数にも影響する。 |
@@ -58,7 +62,7 @@ DataStore のファイル名は `eev_settings`。
 
 * 初期ディレクトリ: `ExplorerViewModel` のコンストラクタ引数 `initialDirectory` で決定する。全ファイルアクセス許可時は外部ストレージ直下、未許可時は権限不要なアプリ専用フォルダ（`filesDir`）を `MainActivity.resolveInitialDirectory()` が選択する。
 * スクロール位置: `ExplorerViewModel.scrollPositions: StateFlow<Map<String, Int>>` が DataStore の保存値を配信し、`ExplorerScreen` が `LazyListState` / `LazyGridState` の復元・保存に用いる。保存は `snapshotFlow` に `distinctUntilChanged()` と `debounce(300ms)` を適用し、スクロール停止時のみ実行する（DataStore への高頻度書き込み抑止）。
-* フォルダ移動履歴: `ExplorerViewModel` が `directoryHistory: ArrayDeque<String>`（絶対パス）を保持する。`loadDirectory(directory, recordHistory = true)` で移動前に現在フォルダを積み、`navigateBack()` で1つ戻る。権限のないフォルダへ入り込んだ際の復帰手段として機能する。履歴はメモリ上のみで永続化しない。
+* フォルダ移動履歴: `ExplorerViewModel` が `directoryHistory: ArrayDeque<String>`（絶対パス）を保持する。`loadDirectory(directory, recordHistory = true)` で移動前に現在フォルダを積み、`navigateBack()` で1つ戻る。トップバーの戻るボタンおよび端末のシステム戻るボタン（`AppBackHandler`）の両方から呼び出され、権限のないフォルダへ入り込んだ際の復帰手段としても機能する。履歴が空（`canNavigateBack == false`）かつ検索非表示のときのみ、システム戻るボタンでアプリを終了する。履歴はメモリ上のみで永続化しない。
 * 重複ロード抑止: `sortOrder` / `showHiddenFiles` の DataStore 初回購読通知では再ロードせず、値が実際に変化した場合のみ `loadDirectory` を実行する（`isInitialLoadDone` フラグで管理）。
 * メタデータ反映: フォルダのサムネイル・画像数・**翻訳 DB 有無（`hasTransDb`）**は `METADATA_BATCH_SIZE`（8件）ごと、および完了時に一括反映し、再コンポーズ回数を抑える。取得は `FileStorageManager.getFolderMetadata()` が返す `FolderMetadata`（画像数・先頭画像パス・翻訳 DB 有無）を1回の走査で賄い、項目単位の追加走査は行わない。
 
@@ -71,6 +75,8 @@ DataStore のファイル名は `eev_settings`。
 | フィールド | データ型 | デフォルト値 | 説明 |
 | :--- | :--- | :--- | :--- |
 | `imageFiles` | `List<File>` | `emptyList()` | 現在のフォルダ内の画像ファイル一覧（ソート済み）。 |
+| `isCurrentFolderFavorite`| `Boolean` | `false` | 現在閲覧中のフォルダがお気に入り登録されているか。 |
+| `isFromBookshelf` | `Boolean` | `false` | 本棚画面から起動されたかどうか。`true` の場合、フォルダまたぎ移動（次／前フォルダ）はお気に入り登録フォルダ（`favorite_folders`）内を `viewerSortOrder` 順で循環（ループ）移動する。 |
 | `currentIndex` | `Int` | `0` | フォルダ内での現在の画像インデックス。 |
 | `cropPosition` | `CropPosition` | `CropPosition.FULL` | 漫画モード時の切り出し位置（`RIGHT_HALF`, `LEFT_HALF`, `FULL`）。 |
 | `isMangaMode` | `Boolean` | `false` | 漫画モードのON/OFF。 |
@@ -137,6 +143,31 @@ DataStore のファイル名は `eev_settings`。
 
 * 翻訳処理の進行状態は `ViewerUiState.isTranslating`（`Boolean`）で表現する。仕様書旧版にあった `status` enum（`IDLE`/`PROCESSING`/`SUCCESS`/`ERROR`）は実装に存在しない。
 
+### 2.4 本棚画面状態 (`BookshelfUiState`) および本棚専用 DB (`bookshelf.db`)
+
+`BookshelfViewModel` が保持する。表示モード・ソート順・サムネイルサイズ・付加情報表示は DataStore を介して `ExplorerUiState` と共有・連動する。
+また、本棚フォルダのカスタム並び順、高速表示用キャッシュメタデータ、およびカテゴリ管理情報は SQLite DB `bookshelf.db`（`BookshelfDatabase`）の以下3テーブルおよび `filesDir/bookshelf_thumbs`（`BookshelfThumbnailStore`）に永続化される。
+- `bookshelf_items`: `folder_path`, `folder_name`, `custom_order`, `thumb_path`, `image_count`, `last_modified`, `has_trans_db`
+- `bookshelf_categories`: `id`, `name`, `created_at`
+- `bookshelf_folder_categories`: `folder_path`, `category_id`（1フォルダへの複数カテゴリ割り当て）
+
+| フィールド | データ型 | デフォルト値 | 説明 |
+| :--- | :--- | :--- | :--- |
+| `favoriteFolders` | `List<FavoriteFolder>` | `emptyList()` | 登録済みかつ実在するお気に入りフォルダの一覧（メタデータ・所属カテゴリ情報付与、`folderSortOrder` ソート済み）。 |
+| `categories` | `List<BookshelfCategory>` | `emptyList()` | 登録済みカテゴリ一覧（ID・カテゴリ名）。 |
+| `selectedCategoryIds` | `Set<Long>` | `emptySet()` | ヘッダーで選択中のカテゴリ絞り込み ID 集合（空集合 = すべて、`setOf(-1L)` = 未分類、正整数の集合 = 指定カテゴリすべてを含む AND 検索）。 |
+| `folderSortOrder` | `SortOrder` | `SortOrder.NAME_ASC` | フォルダに適用中のソート順（DataStore 共有、`SortOrder.CUSTOM` 時は `customOrder` 昇順、`SortOrder.CUSTOM_DESC` 時は `customOrder` 降順）。 |
+| `fileSortOrder` | `SortOrder` | `SortOrder.NAME_ASC` | ファイルに適用中のソート順（DataStore 共有、ビューワ起動時に引き継ぐ）。 |
+| `viewMode` | `ViewMode` | `ViewMode.LIST` | 現在の表示モード（リスト / グリッド、DataStore 共有）。 |
+| `thumbnailSize` | `ThumbnailSize` | `ThumbnailSize.MEDIUM` | サムネイル表示サイズ（大・中・小、DataStore 共有）。 |
+| `showItemInfo` | `Boolean` | `false` | 日付・枚数などの付加情報を表示するか（DataStore 共有）。 |
+| `searchQuery` | `String` | `""` | 本棚内の検索フィルタ文字列。 |
+| `isSearchActive` | `Boolean` | `false` | 本棚の検索バーの表示/非表示状態。 |
+| `isLoading` | `Boolean` | `false` | 本棚フォルダの読み込み・サムネイル取得状態（DBキャッシュから即時表示できた場合はスピナーを出さず裏で差分更新）。 |
+
+* 派生プロパティ `filteredFavoriteFolders`: `List<FavoriteFolder>` - `selectedCategoryIds`（空集合=全件、`UNCATEGORIZED_CATEGORY_ID` 含有=カテゴリ未割り当て、それ以外=`categoryIds.containsAll(selectedCategoryIds)` のAND検索）および `searchQuery`（部分一致・大文字小文字無視）の双方で絞り込んだ一覧。本棚から画像ビューワを開いた際の次/前フォルダ循環移動も、このカテゴリ絞り込み対象フォルダ群を対象とする。
+* ドラッグ＆ドロップ並び替え: `BookshelfViewModel.moveFolderInMemory` / `commitCustomOrder` により一覧順序を入れ替え、`BookshelfDatabase.updateCustomOrders()` で `bookshelf.db` に永続化する。
+
 ## 3. 関連モデル定義
 
 ### 3.1 `CropPosition` (`feature/viewer/MangaCropHelper.kt`)
@@ -157,6 +188,15 @@ DataStore のファイル名は `eev_settings`。
 | `DATE_ASC` | 日時(古い順) |
 | `IMAGE_COUNT_DESC` | 画像数順(多い順) |
 | `IMAGE_COUNT_ASC` | 画像数順(少ない順) |
+| `CUSTOM` | カスタム順 (昇順) |
+| `CUSTOM_DESC` | カスタム順 (降順) |
+
+### 3.2.1 `BookshelfCategory` (`core/model/BookshelfCategory.kt`)
+
+| フィールド | データ型 | 説明 |
+| :--- | :--- | :--- |
+| `id` | `Long` | カテゴリの一意識別子（DB 自動採番）。 |
+| `name` | `String` | カテゴリ表示名。 |
 
 ### 3.3 `ViewMode` (`core/model/ViewMode.kt`)
 

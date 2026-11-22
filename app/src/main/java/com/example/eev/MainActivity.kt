@@ -22,6 +22,8 @@ import com.example.eev.core.datastore.EEVDataStore
 import com.example.eev.core.model.FileItem
 import com.example.eev.core.storage.FileStorageManager
 import com.example.eev.core.ui.EEVTheme
+import com.example.eev.feature.bookshelf.BookshelfScreen
+import com.example.eev.feature.bookshelf.BookshelfViewModel
 import com.example.eev.feature.explorer.ExplorerScreen
 import com.example.eev.feature.explorer.ExplorerViewModel
 import com.example.eev.feature.viewer.ViewerScreen
@@ -37,6 +39,7 @@ import java.io.File
  */
 sealed class Screen {
     object Explorer : Screen()
+    object Bookshelf : Screen()
     data class Viewer(val directory: File, val initialFile: File) : Screen()
     object Settings : Screen()
 }
@@ -92,6 +95,7 @@ class MainActivity : ComponentActivity() {
             EEVTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     EEVApp(
+                        dataStore = dataStore,
                         explorerViewModel = explorerViewModel,
                         viewerViewModel = viewerViewModel,
                         settingsViewModel = settingsViewModel
@@ -189,6 +193,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun EEVApp(
+    dataStore: EEVDataStore,
     explorerViewModel: ExplorerViewModel,
     viewerViewModel: ViewerViewModel,
     settingsViewModel: SettingsViewModel
@@ -216,7 +221,34 @@ fun EEVApp(
     }
 
     val storageManager = remember { com.example.eev.core.storage.FileStorageManager() }
+    val bookshelfDb = remember { com.example.eev.feature.bookshelf.BookshelfDatabase(context) }
+    val bookshelfThumbStore = remember { com.example.eev.feature.bookshelf.BookshelfThumbnailStore(context) }
+    val bookshelfViewModel = remember {
+        BookshelfViewModel(
+            dataStore = dataStore,
+            storageManager = storageManager,
+            bookshelfDb = bookshelfDb,
+            thumbnailStore = bookshelfThumbStore
+        )
+    }
+    val bookshelfUiState by bookshelfViewModel.uiState.collectAsState()
+    var isSettingsFromBookshelf by remember { mutableStateOf(false) }
     val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+
+    com.example.eev.core.ui.AppBackHandler(
+        currentScreen = currentScreen,
+        isExplorerSearchActive = explorerUiState.isSearchActive,
+        canExplorerNavigateBack = explorerUiState.canNavigateBack,
+        isBookshelfSearchActive = bookshelfUiState.isSearchActive,
+        isViewerBottomSheetVisible = viewerUiState.isBottomSheetVisible,
+        isViewerFromBookshelf = viewerUiState.isFromBookshelf,
+        isSettingsFromBookshelf = isSettingsFromBookshelf,
+        onCloseExplorerSearch = { explorerViewModel.toggleSearchActive(false) },
+        onExplorerNavigateBack = { explorerViewModel.navigateBack() },
+        onCloseBookshelfSearch = { bookshelfViewModel.toggleSearchActive(false) },
+        onDismissViewerBottomSheet = { viewerViewModel.toggleBottomSheet(false) },
+        onNavigateToScreen = { screen -> currentScreen = screen }
+    )
 
     when (currentScreen) {
         is Screen.Explorer -> {
@@ -227,11 +259,11 @@ fun EEVApp(
                 },
                 onFileClick = { item ->
                     if (storageManager.isImageFile(item.file)) {
-                        // エクスプローラの並び順をそのままビューワの起点ソート順として引き継ぐ。
+                        // ファイル個別ソート順をビューワの初期並び順として引き継ぐ
                         viewerViewModel.loadImagesFromDirectory(
                             directory = explorerUiState.currentDirectory,
                             initialFile = item.file,
-                            sortOrder = explorerUiState.sortOrder
+                            sortOrder = explorerUiState.fileSortOrder
                         )
                         currentScreen = Screen.Viewer(
                             directory = explorerUiState.currentDirectory,
@@ -241,8 +273,11 @@ fun EEVApp(
                         openFileWithExternalApp(context, item.file)
                     }
                 },
-                onSortChanged = { sortOrder ->
-                    explorerViewModel.updateSortOrder(sortOrder)
+                onFolderSortChanged = { sortOrder ->
+                    explorerViewModel.updateFolderSortOrder(sortOrder)
+                },
+                onFileSortChanged = { sortOrder ->
+                    explorerViewModel.updateFileSortOrder(sortOrder)
                 },
                 onViewModeChanged = { viewMode ->
                     explorerViewModel.updateViewMode(viewMode)
@@ -290,7 +325,17 @@ fun EEVApp(
                     }
                 },
                 onSettingsClick = {
+                    isSettingsFromBookshelf = false
                     currentScreen = Screen.Settings
+                },
+                onBookshelfClick = {
+                    currentScreen = Screen.Bookshelf
+                },
+                onToggleFavorite = { item ->
+                    explorerViewModel.toggleFavorite(item.file.absolutePath)
+                },
+                onDeleteItem = { item ->
+                    explorerViewModel.deleteItem(item)
                 },
                 savedScrollPositions = explorerScrollPositions,
                 onScrollPositionChanged = { path, index ->
@@ -303,7 +348,9 @@ fun EEVApp(
                 uiState = viewerUiState,
                 onNextPage = { viewerViewModel.onNextClicked() },
                 onPreviousPage = { viewerViewModel.onPreviousClicked() },
-                onCloseViewer = { currentScreen = Screen.Explorer },
+                onCloseViewer = {
+                    currentScreen = if (viewerUiState.isFromBookshelf) Screen.Bookshelf else Screen.Explorer
+                },
                 onOpenSettingsBottomSheet = { viewerViewModel.toggleBottomSheet(true) },
                 onToggleAudiblePlayback = { viewerViewModel.toggleAudiblePlayback() },
                 onAudibleModeChanged = { mode -> viewerViewModel.updateAudibleMode(mode) },
@@ -324,7 +371,103 @@ fun EEVApp(
                 onViewerSortOrderChanged = { sort -> viewerViewModel.updateViewerSortOrder(sort) },
                 onDismissBottomSheet = { viewerViewModel.toggleBottomSheet(false) },
                 onTripleTapNextFolder = { viewerViewModel.navigateToNextDirectoryFromMenu() },
-                onTripleTapFirstImage = { viewerViewModel.jumpToFirstImage() }
+                onTripleTapFirstImage = { viewerViewModel.jumpToFirstImage() },
+                onToggleFavorite = { viewerViewModel.toggleFavoriteCurrentFolder() }
+            )
+        }
+        is Screen.Bookshelf -> {
+            BookshelfScreen(
+                uiState = bookshelfUiState,
+                onBackClick = {
+                    if (bookshelfUiState.isSearchActive) {
+                        bookshelfViewModel.toggleSearchActive(false)
+                    } else {
+                        currentScreen = Screen.Explorer
+                    }
+                },
+                onFolderClick = { folder ->
+                    coroutineScope.launch {
+                        val images = storageManager.getImageFiles(
+                            directory = folder,
+                            sortOrder = bookshelfUiState.fileSortOrder,
+                            showHiddenFiles = explorerUiState.showHiddenFiles
+                        )
+                        val firstImage = images.firstOrNull()
+                        if (firstImage != null) {
+                            val launchSortOrder = when (bookshelfUiState.folderSortOrder) {
+                                com.example.eev.core.model.SortOrder.CUSTOM,
+                                com.example.eev.core.model.SortOrder.CUSTOM_DESC -> bookshelfUiState.folderSortOrder
+                                else -> bookshelfUiState.fileSortOrder
+                            }
+                            val customOrders = bookshelfUiState.favoriteFolders.associate {
+                                it.file.absolutePath to it.customOrder
+                            }
+                            val targetPaths = bookshelfUiState.filteredFavoriteFolders
+                                .map { it.file.absolutePath }
+                                .toSet()
+                            viewerViewModel.loadImagesFromDirectory(
+                                directory = folder,
+                                initialFile = firstImage,
+                                sortOrder = launchSortOrder,
+                                isFromBookshelf = true,
+                                bookshelfCustomOrders = customOrders,
+                                bookshelfTargetPaths = targetPaths
+                            )
+                            currentScreen = Screen.Viewer(directory = folder, initialFile = firstImage)
+                        } else {
+                            android.widget.Toast.makeText(context, "フォルダ内に画像が見つかりません", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onRemoveFavorite = { folderPath ->
+                    bookshelfViewModel.removeFavorite(folderPath)
+                },
+                onMoveFolder = { fromPath, toPath ->
+                    bookshelfViewModel.moveFolderInMemory(fromPath, toPath)
+                },
+                onDragFinished = {
+                    bookshelfViewModel.commitCustomOrder()
+                },
+                onSelectCategoryFilter = { categoryId ->
+                    bookshelfViewModel.toggleCategoryFilter(categoryId)
+                },
+                onAddCategory = { name, onCreated ->
+                    bookshelfViewModel.addCategory(name, onCreated)
+                },
+                onRenameCategory = { categoryId, newName ->
+                    bookshelfViewModel.renameCategory(categoryId, newName)
+                },
+                onDeleteCategory = { categoryId ->
+                    bookshelfViewModel.deleteCategory(categoryId)
+                },
+                onUpdateFolderCategories = { folderPath, categoryIds ->
+                    bookshelfViewModel.updateFolderCategories(folderPath, categoryIds)
+                },
+                onFolderSortChanged = { sortOrder ->
+                    bookshelfViewModel.updateFolderSortOrder(sortOrder)
+                },
+                onFileSortChanged = { sortOrder ->
+                    bookshelfViewModel.updateFileSortOrder(sortOrder)
+                },
+                onViewModeChanged = { viewMode ->
+                    bookshelfViewModel.updateViewMode(viewMode)
+                },
+                onThumbnailSizeChanged = { size ->
+                    bookshelfViewModel.updateThumbnailSize(size)
+                },
+                onShowItemInfoChanged = { enabled ->
+                    bookshelfViewModel.updateShowItemInfo(enabled)
+                },
+                onSearchQueryChanged = { query ->
+                    bookshelfViewModel.updateSearchQuery(query)
+                },
+                onToggleSearch = { active ->
+                    bookshelfViewModel.toggleSearchActive(active)
+                },
+                onSettingsClick = {
+                    isSettingsFromBookshelf = true
+                    currentScreen = Screen.Settings
+                }
             )
         }
         is Screen.Settings -> {
@@ -337,7 +480,9 @@ fun EEVApp(
                 onBackgroundColorHexChanged = { hex -> settingsViewModel.updateBackgroundColorHex(hex) },
                 onSourceLanguageChanged = { lang -> settingsViewModel.updateSourceLanguage(lang) },
                 onTargetLanguageChanged = { lang -> settingsViewModel.updateTargetLanguage(lang) },
-                onBackClick = { currentScreen = Screen.Explorer }
+                onBackClick = {
+                    currentScreen = if (isSettingsFromBookshelf) Screen.Bookshelf else Screen.Explorer
+                }
             )
         }
     }

@@ -293,7 +293,9 @@ fun SortOrderDropdownSelector(
         SortOrder.NAME_ASC,
         SortOrder.NAME_DESC,
         SortOrder.DATE_DESC,
-        SortOrder.DATE_ASC
+        SortOrder.DATE_ASC,
+        SortOrder.CUSTOM,
+        SortOrder.CUSTOM_DESC
     )
 
     ExposedDropdownMenuBox(

@@ -117,20 +117,31 @@ class FolderThumbnailCache(private val context: Context) {
     /**
      * キャッシュディレクトリの合計サイズが上限を超えている場合、最終アクセスが古い順に削除する。
      *
+     * ソート中に別スレッドからのタイムスタンプ更新や削除で [File.lastModified] が変化し
+     * `TimSort` の比較契約違反（[IllegalArgumentException]）が発生するのを防ぐため、
+     * 各ファイルの最終更新日時を事前にスナップショットしてからソートする。
+     *
      * [責任]: LRU 方式によるキャッシュ容量制御。
      * [影響する状態]: キャッシュディレクトリのファイル群。
      * [潜在的エラー]: 削除失敗時は無視して処理を継続する。
      */
+    @Synchronized
     private fun enforceCacheLimit() {
-        val files = cacheDir.listFiles() ?: return
-        var totalBytes = files.sumOf { it.length() }
-        if (totalBytes <= MAX_CACHE_BYTES) return
+        try {
+            val files = cacheDir.listFiles() ?: return
+            var totalBytes = files.sumOf { it.length() }
+            if (totalBytes <= MAX_CACHE_BYTES) return
 
-        val sortedByOldest = files.sortedBy { it.lastModified() }
-        for (file in sortedByOldest) {
-            if (totalBytes <= MAX_CACHE_BYTES) break
-            val length = file.length()
-            if (file.delete()) totalBytes -= length
+            val sortedByOldest = files
+                .map { file -> file to file.lastModified() }
+                .sortedBy { (_, lastModified) -> lastModified }
+            for ((file, _) in sortedByOldest) {
+                if (totalBytes <= MAX_CACHE_BYTES) break
+                val length = file.length()
+                if (file.delete()) totalBytes -= length
+            }
+        } catch (_: Exception) {
+            // キャッシュ削除・ソート失敗時はアプリをクラッシュさせず無視して継続する
         }
     }
 }

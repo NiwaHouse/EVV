@@ -130,11 +130,13 @@ class FileStorageManager {
             SortOrder.DATE_ASC -> folders.sortedBy { it.lastModified }
             SortOrder.IMAGE_COUNT_DESC -> folders.sortedByDescending { it.imageCount }
             SortOrder.IMAGE_COUNT_ASC -> folders.sortedBy { it.imageCount }
+            SortOrder.CUSTOM -> folders
+            SortOrder.CUSTOM_DESC -> folders.reversed()
         }
 
         val sortedFiles = when (sortOrder) {
-            SortOrder.NAME_ASC -> files.sortedBy { it.name.lowercase() }
-            SortOrder.NAME_DESC -> files.sortedByDescending { it.name.lowercase() }
+            SortOrder.NAME_ASC, SortOrder.CUSTOM -> files.sortedBy { it.name.lowercase() }
+            SortOrder.NAME_DESC, SortOrder.CUSTOM_DESC -> files.sortedByDescending { it.name.lowercase() }
             SortOrder.DATE_DESC -> files.sortedByDescending { it.lastModified }
             SortOrder.DATE_ASC -> files.sortedBy { it.lastModified }
             SortOrder.IMAGE_COUNT_DESC -> files.sortedByDescending { it.imageCount }
@@ -142,5 +144,62 @@ class FileStorageManager {
         }
 
         return sortedFolders + sortedFiles
+    }
+
+    /**
+     * フォルダとファイルに異なるソート順を適用して FileItem リストをソートする。
+     *
+     * [責任]: フォルダブロック・ファイルブロックそれぞれの独立ソートと結合。
+     * [影響する状態]: エクスプローラ画面の一覧表示順序。
+     * [潜在的エラー]: なし。
+     */
+    fun sortFileItemsSeparately(
+        items: List<FileItem>,
+        folderOrder: SortOrder,
+        fileOrder: SortOrder
+    ): List<FileItem> {
+        val (folders, files) = items.partition { it.isDirectory }
+
+        val sortedFolders = when (folderOrder) {
+            SortOrder.NAME_ASC -> folders.sortedBy { it.name.lowercase() }
+            SortOrder.NAME_DESC -> folders.sortedByDescending { it.name.lowercase() }
+            SortOrder.DATE_DESC -> folders.sortedByDescending { it.lastModified }
+            SortOrder.DATE_ASC -> folders.sortedBy { it.lastModified }
+            SortOrder.IMAGE_COUNT_DESC -> folders.sortedByDescending { it.imageCount }
+            SortOrder.IMAGE_COUNT_ASC -> folders.sortedBy { it.imageCount }
+            SortOrder.CUSTOM -> folders
+            SortOrder.CUSTOM_DESC -> folders.reversed()
+        }
+
+        val sortedFiles = when (fileOrder) {
+            SortOrder.NAME_ASC, SortOrder.CUSTOM -> files.sortedBy { it.name.lowercase() }
+            SortOrder.NAME_DESC, SortOrder.CUSTOM_DESC -> files.sortedByDescending { it.name.lowercase() }
+            SortOrder.DATE_DESC -> files.sortedByDescending { it.lastModified }
+            SortOrder.DATE_ASC -> files.sortedBy { it.lastModified }
+            SortOrder.IMAGE_COUNT_DESC -> files.sortedByDescending { it.imageCount }
+            SortOrder.IMAGE_COUNT_ASC -> files.sortedBy { it.imageCount }
+        }
+
+        return sortedFolders + sortedFiles
+    }
+
+    /**
+     * 指定されたファイルまたはフォルダを削除する。
+     *
+     * [責任]: ファイルシステムの完全削除（フォルダの場合は再帰削除）。
+     * [影響する状態]: 端末ストレージのファイル実体。
+     * [潜在的エラー]: 権限不足またはファイルロックによる削除失敗（false返却）。
+     */
+    suspend fun deleteItem(file: File): Boolean = withContext(Dispatchers.IO) {
+        if (!file.exists()) return@withContext false
+        try {
+            if (file.isDirectory) {
+                file.deleteRecursively()
+            } else {
+                file.delete()
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 }

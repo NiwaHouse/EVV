@@ -12,7 +12,9 @@ enum class SortOrder(val displayName: String) {
     DATE_DESC("日時(新しい順)"),
     DATE_ASC("日時(古い順)"),
     IMAGE_COUNT_DESC("画像数順(多い順)"),
-    IMAGE_COUNT_ASC("画像数順(少ない順)");
+    IMAGE_COUNT_ASC("画像数順(少ない順)"),
+    CUSTOM("カスタム順 (昇順)"),
+    CUSTOM_DESC("カスタム順 (降順)");
 
     companion object {
         fun fromName(name: String): SortOrder {

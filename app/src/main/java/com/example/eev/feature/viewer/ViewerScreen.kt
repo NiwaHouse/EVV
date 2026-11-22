@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -87,7 +89,8 @@ fun ViewerScreen(
     onViewerSortOrderChanged: (SortOrder) -> Unit,
     onDismissBottomSheet: () -> Unit,
     onTripleTapNextFolder: () -> Unit,
-    onTripleTapFirstImage: () -> Unit
+    onTripleTapFirstImage: () -> Unit,
+    onToggleFavorite: () -> Unit = {}
 ) {
     var showTripleTapDialog by remember { mutableStateOf(false) }
     val currentFile = uiState.imageFiles.getOrNull(uiState.currentIndex)
@@ -233,7 +236,7 @@ fun ViewerScreen(
             )
         }
 
-        // 画面右上コントロールエリア（翻訳 ON/OFF トグル & オーディブル再生トグル）
+        // 画面右上コントロールエリア（お気に入りトグル & 翻訳 ON/OFF トグル & オーディブル再生トグル）
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -241,6 +244,15 @@ fun ViewerScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 現在フォルダのお気に入り登録/解除トグル
+            IconButton(onClick = onToggleFavorite) {
+                Icon(
+                    imageVector = if (uiState.isCurrentFolderFavorite) Icons.Filled.Star else Icons.Outlined.Star,
+                    contentDescription = if (uiState.isCurrentFolderFavorite) "お気に入りを解除" else "お気に入りに追加",
+                    tint = if (uiState.isCurrentFolderFavorite) Color(0xFFFFD700) else Color.White.copy(alpha = 0.5f),
+                    modifier = Modifier.size(32.dp)
+                )
+            }
             IconButton(
                 onClick = { onTranslationEnabledChanged(!uiState.isTranslationEnabled) }
             ) {
